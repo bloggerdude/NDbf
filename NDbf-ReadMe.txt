@@ -1,0 +1,1 @@
+This is an attempt to add write capability to NDbfReader
