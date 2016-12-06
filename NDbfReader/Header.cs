@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 
 namespace NDbfReader
 {
@@ -9,11 +8,6 @@ namespace NDbfReader
     /// </summary>
     public class Header
     {
-        private readonly DateTime _lastModified;
-        private readonly int _rowCount;
-        private readonly int _rowSize;
-        private readonly ReadOnlyCollection<IColumn> _columns;
-
         /// <summary>
         /// Initializes a new instance with the specified rows size, rows count and columns.
         /// </summary>
@@ -27,60 +21,41 @@ namespace NDbfReader
         {
             if (rowCount < 0)
             {
-                throw new ArgumentOutOfRangeException("rowCount");
+                throw new ArgumentOutOfRangeException(nameof(rowCount));
             }
             if (rowSize < 0)
             {
-                throw new ArgumentOutOfRangeException("rowSize");
+                throw new ArgumentOutOfRangeException(nameof(rowSize));
             }
             if (columns == null)
             {
-                throw new ArgumentNullException("columns");
+                throw new ArgumentNullException(nameof(columns));
             }
 
-            _lastModified = lastModified;
-            _rowCount = rowCount;
-            _rowSize = rowSize;
-            _columns = new ReadOnlyCollection<IColumn>(columns);
-        }
-
-        /// <summary>
-        /// Gets a date the table was last modified.
-        /// </summary>
-        public DateTime LastModified
-        {
-            get
-            {
-                return _lastModified;
-            }
-        }
-
-        /// <summary>
-        /// Gets the number of rows in the table, including deleted ones.
-        /// </summary>
-        public int RowCount
-        {
-            get
-            {
-                return _rowCount;
-            }
-        }
-
-        /// <summary>
-        /// Gets the size of a row in bytes. 
-        /// </summary>
-        public int RowSize
-        {
-            get { return _rowSize; }
+            LastModified = lastModified;
+            RowCount = rowCount;
+            RowSize = rowSize;
+            Columns = new ColumnCollection(columns);
         }
 
         /// <summary>
         /// Gets the columns.
         /// </summary>
-        public ReadOnlyCollection<IColumn> Columns
-        {
-            get { return _columns; }
-        }
+        public ColumnCollection Columns { get; }
 
+        /// <summary>
+        /// Gets the date the table was last modified.
+        /// </summary>
+        public DateTime LastModified { get; }
+
+        /// <summary>
+        /// Gets the number of rows in the table, including deleted ones.
+        /// </summary>
+        public int RowCount { get; }
+
+        /// <summary>
+        /// Gets the size of a row in bytes.
+        /// </summary>
+        public int RowSize { get; }
     }
 }

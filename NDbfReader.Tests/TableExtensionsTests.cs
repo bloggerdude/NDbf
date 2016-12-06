@@ -1,14 +1,14 @@
-﻿using FluentAssertions;
-using NSubstitute;
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Data;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
+using FluentAssertions;
+using NDbfReader.Tests.Infrastructure;
+using NSubstitute;
 using Xunit;
-using Xunit.Extensions;
 
 namespace NDbfReader.Tests
 {
@@ -16,121 +16,63 @@ namespace NDbfReader.Tests
     {
         private const string NOTHING = "NOTHING";
 
-        [Fact]
-        public void AsDataTable_ReturnsDataTableWithSchemaThatMatchesDbfTableColumns()
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task AsDataTable_ColumnNames_ReturnsDataTableOnlyWithTheColumnNames(bool useAsync)
         {
             // Arrange
-            using (var table = Samples.OpenBasicTable())
+            using (var table = await OpenBasicTable(useAsync))
             {
-                var expectedDataTableColumns = Samples.BasicTableContent.Select(pair => new { Name = pair.Key, Type = pair.Value[0].GetType() });
-
                 // Act
-                var dataTable = table.AsDataTable();
+                var actualColumns = (await this.Exec(() => table.AsDataTable("DATE", "LOGICAL"), useAsync))
+                    .Columns
+                    .Cast<DataColumn>().Select(c => c.ColumnName);
 
                 // Assert
-                var actualDataTableColumns = dataTable.Columns.Cast<DataColumn>().Select(column => new { Name = column.ColumnName, Type = column.DataType });
-                actualDataTableColumns.ShouldAllBeEquivalentTo(expectedDataTableColumns);
+                actualColumns.ShouldAllBeEquivalentTo(new[] { "DATE", "LOGICAL" }, opt => opt.WithStrictOrdering());
             }
         }
 
         [Theory]
-        [InlineData("TEXT")]
-        [InlineData("NUMERIC")]
-        [InlineData("LOGICAL")]
-        [InlineData("DATE")]
-        [InlineData("LONG")]
-        public void AsDataTable_ReturnsPopulatedDataTable(string columnName)
+        [InlineDataWithExecMode]
+        public Task AsDataTable_CustomEncodingAndEmptyColumnNamesList_ThrowsArgumentException(bool useAsync)
+        {
+            return AsDataTable_EmptyColumnNamesList_ThrowsArgumentException((table, columns) => this.Exec(() => table.AsDataTable(Encoding.ASCII, columns), useAsync), useAsync);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task AsDataTable_CustomEncodingAndNoColumnNames_ReturnsDataTableWithAllColumns(bool useAsync)
         {
             // Arrange
-            using (var table = Samples.OpenBasicTable())
+            using (var table = await OpenBasicTable(useAsync))
             {
-                var expectedValues = ReplaceNullWithDBNull(Samples.BasicTableContent[columnName]);
-
                 // Act
-                var dataTable = table.AsDataTable();
+                var dataTable = await this.Exec(() => table.AsDataTable(Encoding.ASCII), useAsync);
 
                 // Assert
-                var actualValues = dataTable.AsEnumerable().Select(row => row[columnName]);
-                actualValues.ShouldAllBeEquivalentTo(expectedValues);
+                Assert.Equal(5, dataTable.Columns.Count);
             }
         }
 
-        [Fact]
-        public void AsDataTable_NoParameters_OpensReaderWithASCIIEncoding()
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task AsDataTable_DefaultEncodingAndEmptyColumnNamesList_ThrowsArgumentException(bool useAsync)
         {
-            AsDataTable_OpensReaderWithASCIIEncoding(table => table.AsDataTable());
+            return AsDataTable_EmptyColumnNamesList_ThrowsArgumentException((table, columns) => this.Exec(() => table.AsDataTable(columns), useAsync), useAsync);
         }
 
-        [Fact]
-        public void AsDataTable_ColumnNames_OpensReaderWithASCIIEncoding()
-        {
-            AsDataTable_OpensReaderWithASCIIEncoding(table => table.AsDataTable("LOGICAL"));
-        }
-
-        private void AsDataTable_OpensReaderWithASCIIEncoding(Action<Table> action)
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task AsDataTable_InvalidColumnName_ThrowsArgumentOutOfRangeException(bool useAsync)
         {
             // Arrange
-            using (var table = GetMockedBasicSampleTable())
-            {
-                // Act
-                action(table);
-
-                // Assert
-                table.Received().OpenReader(Encoding.ASCII);
-            }
-        }
-
-        [Fact]
-        public void AsDataTable_CustomEncodingAndColumnNames_OpensReaderWithTheEncoding()
-        {
-            AsDataTable_OpensReaderWithTheEncoding((table, encoding) => table.AsDataTable(encoding, "LOGICAL"));
-        }
-
-        [Fact]
-        public void AsDataTable_CustomEncoding_OpensReaderWithTheEncoding()
-        {
-            AsDataTable_OpensReaderWithTheEncoding((table, encoding) => table.AsDataTable(encoding));
-        }
-
-        private void AsDataTable_OpensReaderWithTheEncoding(Action<Table, Encoding> action)
-        {
-            // Arrange
-            using (var table = GetMockedBasicSampleTable())
-            {
-                var encoding = Encoding.UTF8;
-
-                // Act
-                action(table, encoding);
-
-                // Assert
-                table.Received().OpenReader(encoding);
-            }
-        }
-
-        [Fact]
-        public void AsDataTable_ColumnNames_ReturnsDataTableOnlyWithTheColumnNames()
-        {
-            // Arrange
-            using (var table = Table.Open(Samples.GetBasicTableStream()))
-            {
-                // Act
-                var actualColumns = table.AsDataTable("DATE", "LOGICAL").Columns.Cast<DataColumn>().Select(c => c.ColumnName);
-
-                // Assert
-                actualColumns.ShouldAllBeEquivalentTo(new[] { "DATE", "LOGICAL" });
-            }
-        }
-
-        [Fact]
-        public void AsDataTable_InvalidColumnName_ThrowsArgumentOutOfRangeException()
-        {
-            // Arrange
-            using (var table = Table.Open(Samples.GetBasicTableStream()))
+            using (var table = await OpenBasicTable(useAsync))
             {
                 var invalidColumnName = "DATEE";
 
                 // Act
-                var exception = Assert.Throws<ArgumentOutOfRangeException>(() => table.AsDataTable(invalidColumnName));
+                var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => this.Exec(() => table.AsDataTable(invalidColumnName), useAsync));
 
                 // Assert
                 Assert.Equal("columnNames", exception.ParamName);
@@ -138,58 +80,66 @@ namespace NDbfReader.Tests
             }
         }
 
-        [Fact]
-        public void AsDataTable_DefaultEncodingAndEmptyColumnNamesList_ThrowsArgumentException()
-        {
-            AsDataTable_EmptyColumnNamesList_ThrowsArgumentException((table, columns) => table.AsDataTable(columns));
-        }
-
-        [Fact]
-        public void AsDataTable_CustomEncodingAndEmptyColumnNamesList_ThrowsArgumentException()
-        {
-            AsDataTable_EmptyColumnNamesList_ThrowsArgumentException((table, columns) => table.AsDataTable(Encoding.ASCII, columns));
-        }
-
-        private void AsDataTable_EmptyColumnNamesList_ThrowsArgumentException(Action<Table, string[]> action)
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task AsDataTable_NoParameters_ReturnsDataTableWithAllColumns(bool useAsync)
         {
             // Arrange
-            using (var table = Table.Open(Samples.GetBasicTableStream()))
+            using (var table = await OpenBasicTable(useAsync))
             {
                 // Act
-                var exception = Assert.Throws<ArgumentException>(() => action(table, new string[] {}));
-
-                // Assert
-                Assert.Equal("columnNames", exception.ParamName);
-                exception.Message.Should().StartWith("No column names specified. Specify at least one column.");
-            }
-        }
-
-        [Fact]
-        public void AsDataTable_CustomEncodingAndNoColumnNames_ReturnsDataTableWithAllColumns()
-        {
-            // Arrange
-            using (var table = Table.Open(Samples.GetBasicTableStream()))
-            {
-                // Act
-                var dataTable = table.AsDataTable(Encoding.ASCII);
+                var dataTable = await this.Exec(() => table.AsDataTable(), useAsync);
 
                 // Assert
                 Assert.Equal(5, dataTable.Columns.Count);
             }
         }
 
-        [Fact]
-        public void AsDataTable_NoParameters_ReturnsDataTableWithAllColumns()
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task AsDataTable_ReturnsDataTableWithSchemaThatMatchesDbfTableColumns(bool useAsync)
         {
             // Arrange
-            using (var table = Table.Open(Samples.GetBasicTableStream()))
+            using (var table = await OpenBasicTable(useAsync))
             {
+                var expectedDataTableColumns = Samples.BasicTableContent.Select(pair => new { Name = pair.Key, Type = pair.Value[0].GetType() });
+
                 // Act
-                var dataTable = table.AsDataTable();
+                var dataTable = await this.Exec(() => table.AsDataTable(), useAsync);
 
                 // Assert
-                Assert.Equal(5, dataTable.Columns.Count);
+                var actualDataTableColumns = dataTable.Columns.Cast<DataColumn>().Select(column => new { Name = column.ColumnName, Type = column.DataType });
+                actualDataTableColumns.ShouldAllBeEquivalentTo(expectedDataTableColumns, opt => opt.WithStrictOrdering());
             }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode("TEXT")]
+        [InlineDataWithExecMode("NUMERIC")]
+        [InlineDataWithExecMode("LOGICAL")]
+        [InlineDataWithExecMode("DATE")]
+        [InlineDataWithExecMode("LONG")]
+        public async Task AsDataTable_ReturnsPopulatedDataTable(bool useAsync, string columnName)
+        {
+            // Arrange
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var expectedValues = ReplaceNullWithDBNull(Samples.BasicTableContent[columnName]);
+
+                // Act
+                var dataTable = await this.Exec(() => table.AsDataTable(), useAsync);
+
+                // Assert
+                var actualValues = dataTable.AsEnumerable().Select(row => row[columnName]);
+                actualValues.ShouldAllBeEquivalentTo(expectedValues, opt => opt.WithStrictOrdering());
+            }
+        }
+
+        private static Table GetMockedBasicSampleTable()
+        {
+            return Substitute.ForPartsOf<MockableTable>(
+                new Header(DateTime.Now, 0, 0, new List<IColumn> { new BooleanColumn("LOGICAL", 0) }),
+                Samples.GetBasicTableStream());
         }
 
         private static IEnumerable<object> ReplaceNullWithDBNull(IEnumerable<object> items)
@@ -200,16 +150,30 @@ namespace NDbfReader.Tests
             }
         }
 
-        private static Table GetMockedBasicSampleTable()
+        private async Task AsDataTable_EmptyColumnNamesList_ThrowsArgumentException(Func<Table, string[], Task> action, bool useAsync)
         {
-            return Substitute.ForPartsOf<MockableTable>(
-                new Header(DateTime.Now, 0, 0, new List<IColumn>() { new BooleanColumn("LOGICAL", 0) }),
-                new BinaryReader(Samples.GetBasicTableStream()));
+            // Arrange
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                // Act
+                var exception = await Assert.ThrowsAsync<ArgumentException>(() => action(table, new string[] { }));
+
+                // Assert
+                Assert.Equal("columnNames", exception.ParamName);
+                exception.Message.Should().StartWith("No column names specified. Specify at least one column.");
+            }
+        }
+
+        private Task<Table> OpenBasicTable(bool useAsync)
+        {
+            return this.Exec(() => Samples.OpenBasicTable(), useAsync);
         }
 
         public class MockableTable : Table
         {
-            public MockableTable(Header header, BinaryReader reader) : base(header, reader) { }
+            public MockableTable(Header header, Stream stream) : base(header, stream)
+            {
+            }
         }
     }
 }

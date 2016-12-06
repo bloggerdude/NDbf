@@ -4,10 +4,10 @@ namespace NDbfReader
 {
     internal interface IParentTable
     {
-        void ThrowIfDisposed();
-
         Header Header { get; }
 
-        BinaryReader BinaryReader { get; }
+        Stream Stream { get; }
+
+        void ThrowIfDisposed();
     }
 }

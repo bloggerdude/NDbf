@@ -1,14 +1,22 @@
 NDbfReader
 ============
 
-NDbfReader is a .NET library for reading dBASE (.dbf) files. The library is simple, extensible and without any external dependencies.
+A *fully managed* .NET library for reading dBASE (.dbf) files.
+
+- Fast and lightweight
+- Full *async support*
+
+Supported platforms:
+
+- .NET 4.0 +
+- .NET Core (.NET Standard 1.3)
 
 ## Example
 
 ```csharp
 using (var table = Table.Open("D:\\foo.dbf"))
 {
-   // default is ASCII encoding
+   // UTF-8 is the default encoding
    var reader = table.OpenReader(Encoding.GetEncoding(1250));
    while(reader.Read())
    {
@@ -17,7 +25,7 @@ using (var table = Table.Open("D:\\foo.dbf"))
    }
 }
 ```
-An entire table can be loaded into a `DataTable`:
+The whole table can be loaded into a `DataTable`:
 ```
 using (var table = Table.Open("D:\\foo.dbf"))
    return table.AsDataTable();
@@ -40,13 +48,15 @@ Install-Package NDbfReader
 
 ## Source
 
-Clone the repository and run `build.cmd`. Opening the solution requires Visual Studio 2010 or newer (including Express editions).
+Install `Visual Studio 2015` and [.NET Core for Visual Studio](https://www.microsoft.com/net/core).
+
+Clone the repository and run `build.cmd`.
 
 ## Tests
 
-Run `run-tests.cmd`.
+Run the `run-tests.cmd` batch file.
 
-Run `test-coverage.cmd` to calculate test coverage with [OpenCover](https://github.com/OpenCover/opencover).
+Run the `test-coverage.cmd` batch file to calculate the test coverage with [OpenCover](https://github.com/OpenCover/opencover).
 
 ## License
 [MIT](https://github.com/eXavera/NDbfReader/blob/master/LICENSE.md)

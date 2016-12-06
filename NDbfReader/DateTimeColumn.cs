@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace NDbfReader
@@ -25,17 +26,18 @@ namespace NDbfReader
         /// <summary>
         /// Loads a value from the specified buffer.
         /// </summary>
-        /// <param name="buffer">The byte array from which a value should be loaded. The buffer length is always at least equal to the column size.</param>
+        /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value. The encoding is never <c>null</c>.</param>
         /// <returns>A column value.</returns>
-        protected override DateTime? DoLoad(byte[] buffer, Encoding encoding)
+        protected override DateTime? DoLoad(byte[] buffer, int offset, Encoding encoding)
         {
-            var stringValue = encoding.GetString(buffer, 0, buffer.Length);
+            string stringValue = encoding.GetString(buffer, offset, Size);
             if (string.IsNullOrWhiteSpace(stringValue))
             {
                 return null;
             }
-            return DateTime.ParseExact(stringValue, "yyyyMMdd", null);
+            return DateTime.ParseExact(stringValue, "yyyyMMdd", null, DateTimeStyles.AllowLeadingWhite | DateTimeStyles.AllowTrailingWhite);
         }
     }
 }

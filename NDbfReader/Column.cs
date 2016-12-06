@@ -8,10 +8,6 @@ namespace NDbfReader
     /// </summary>
     public abstract class Column : IColumn
     {
-        private readonly string _name;
-        private readonly int _size;
-        private readonly int _offset;
-
         /// <summary>
         /// Initializes a new instance with the specified name, offset and size.
         /// </summary>
@@ -24,54 +20,36 @@ namespace NDbfReader
         {
             if (string.IsNullOrEmpty(name))
             {
-                throw new ArgumentNullException("name");
+                throw new ArgumentNullException(nameof(name));
             }
             if (offset < 0)
             {
-                throw new ArgumentOutOfRangeException("offset");
+                throw new ArgumentOutOfRangeException(nameof(offset));
             }
             if (size < 0)
             {
-                throw new ArgumentOutOfRangeException("size");
+                throw new ArgumentOutOfRangeException(nameof(size));
             }
 
-            _name = name;
-            _offset = offset;
-            _size = size;
+            Name = name;
+            Offset = offset;
+            Size = size;
         }
 
         /// <summary>
         /// Gets the column name.
         /// </summary>
-        public string Name
-        {
-            get
-            {
-                return _name;
-            }
-        }
+        public string Name { get; }
 
         /// <summary>
         /// Gets the column offset in a row in bytes.
         /// </summary>
-        public int Offset
-        {
-            get
-            {
-                return _offset;
-            }
-        }
+        public int Offset { get; }
 
         /// <summary>
         /// Gets the column size in bytes.
         /// </summary>
-        public int Size
-        {
-            get
-            {
-                return _size;
-            }
-        }
+        public int Size { get; }
 
         /// <summary>
         /// Gets the <c>CLR</c> type of a column value.
@@ -82,9 +60,10 @@ namespace NDbfReader
         /// Loads a value from the specified buffer.
         /// </summary>
         /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value.</param>
         /// <returns>A column value.</returns>
-        public abstract object LoadValueAsObject(byte[] buffer, Encoding encoding);
+        public abstract object LoadValueAsObject(byte[] buffer, int offset, Encoding encoding);
     }
 
     /// <summary>
@@ -109,57 +88,54 @@ namespace NDbfReader
         /// <summary>
         /// Gets the <c>CLR</c> type of column value.
         /// </summary>
-        public override Type Type
-        {
-            get
-            {
-                return typeof(T);
-            }
-        }
+        public override Type Type => typeof(T);
 
         /// <summary>
         /// Loads a value from the specified buffer.
         /// </summary>
         /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value.</param>
         /// <returns>A column value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="buffer"/> is <c>null</c> or <paramref name="encoding"/> is <c>null</c>.</exception>
-        /// <exception cref="ArgumentException"><paramref name="buffer"/> is smaller then the size of the column.</exception>
-        public T LoadValue(byte[] buffer, Encoding encoding)
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="offset"/> &lt; 0.</exception>
+        public T LoadValue(byte[] buffer, int offset, Encoding encoding)
         {
             if (buffer == null)
             {
-                throw new ArgumentNullException("buffer");
+                throw new ArgumentNullException(nameof(buffer));
             }
-            if (buffer.Length < Size)
+            if (offset < 0)
             {
-                throw ExceptionFactory.CreateArgumentException("buffer", "The buffer must have at least {0} bytes.", Size);
+                throw new ArgumentOutOfRangeException(nameof(offset));
             }
             if (encoding == null)
             {
-                throw new ArgumentNullException("encoding");
+                throw new ArgumentNullException(nameof(encoding));
             }
 
-            return DoLoad(buffer, encoding);
+            return DoLoad(buffer, offset, encoding);
         }
 
         /// <summary>
         /// Loads a value from the specified buffer.
         /// </summary>
         /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value.</param>
         /// <returns>A column value.</returns>
-        public sealed override object LoadValueAsObject(byte[] buffer, Encoding encoding)
+        public sealed override object LoadValueAsObject(byte[] buffer, int offset, Encoding encoding)
         {
-            return LoadValue(buffer, encoding);
+            return LoadValue(buffer, offset, encoding);
         }
 
         /// <summary>
         /// Loads a value from the specified buffer.
         /// </summary>
-        /// <param name="buffer">The byte array from which a value should be loaded. The buffer length is always at least equal to the column size.</param>
+        /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value. The encoding is never <c>null</c>.</param>
         /// <returns>A column value.</returns>
-        protected abstract T DoLoad(byte[] buffer, Encoding encoding);
+        protected abstract T DoLoad(byte[] buffer, int offset, Encoding encoding);
     }
 }

@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Collections.ObjectModel;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace NDbfReader
 {
@@ -18,11 +18,81 @@ namespace NDbfReader
     /// </example>
     public class Table : IParentTable, IDisposable
     {
-        private readonly BinaryReader _reader;
-        private readonly Header _header;
+        internal static readonly Encoding DefaultEncoding = Encoding.UTF8;
 
-        private bool _isReaderOpened;
+        private readonly Header _header;
+        private readonly Stream _stream;
         private bool _disposed;
+        private bool _isReaderOpened;
+
+        /// <summary>
+        /// Initializes a new instance from the specified header and input stream.
+        /// </summary>
+        /// <param name="header">The dBASE header.</param>
+        /// <param name="stream">The input stream positioned at the firsh byte of the first row.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="header"/> is <c>null</c> or <paramref name="stream"/> is <c>null</c>.</exception>
+        protected Table(Header header, Stream stream)
+        {
+            if (header == null)
+            {
+                throw new ArgumentNullException(nameof(header));
+            }
+            if (stream == null)
+            {
+                throw new ArgumentNullException(nameof(stream));
+            }
+
+            _stream = stream;
+            _header = header;
+        }
+
+        /// <summary>
+        /// Gets the columns of the table.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">The table is disposed.</exception>
+        public ColumnCollection Columns
+        {
+            get
+            {
+                ThrowIfDisposed();
+
+                return _header.Columns;
+            }
+        }
+
+        Header IParentTable.Header
+        {
+            get { return Header; }
+        }
+
+        Stream IParentTable.Stream
+        {
+            get { return _stream; }
+        }
+
+        /// <summary>
+        /// Gets the date the table was last modified.
+        /// </summary>
+        public DateTime LastModified
+        {
+            get
+            {
+                ThrowIfDisposed();
+
+                return _header.LastModified;
+            }
+        }
+
+        /// <summary>
+        /// Gets the dBASE header.
+        /// </summary>
+        protected Header Header
+        {
+            get
+            {
+                return _header;
+            }
+        }
 
         /// <summary>
         /// Opens a table from the specified file.
@@ -30,12 +100,11 @@ namespace NDbfReader
         /// <param name="path">The file to be opened.</param>
         /// <returns>A table instance.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="path"/> is <c>null</c> or empty.</exception>
-        /// <exception cref="NotSupportedException">The dBASE table constains one or more columns of unsupported type.</exception>
         public static Table Open(string path)
         {
-            if(string.IsNullOrEmpty(path))
+            if (string.IsNullOrEmpty(path))
             {
-                throw new ArgumentNullException("path");
+                throw new ArgumentNullException(nameof(path));
             }
 
             return Open(File.OpenRead(path));
@@ -48,7 +117,6 @@ namespace NDbfReader
         /// <returns>A table instance.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c>.</exception>
         /// <exception cref="ArgumentException"><paramref name="stream"/> does not allow reading.</exception>
-        /// <exception cref="NotSupportedException">The dBASE table constains one or more columns of unsupported type.</exception>
         public static Table Open(Stream stream)
         {
             return Open(stream, HeaderLoader.Default);
@@ -62,91 +130,119 @@ namespace NDbfReader
         /// <returns>A table instance.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c> or <paramref name="headerLoader"/> is <c>null</c>.</exception>
         /// <exception cref="ArgumentException"><paramref name="stream"/> does not allow reading.</exception>
-        /// <exception cref="NotSupportedException">The dBASE table constains one or more columns of unsupported type.</exception>
         public static Table Open(Stream stream, HeaderLoader headerLoader)
         {
             if (stream == null)
             {
-                throw new ArgumentNullException("stream");
+                throw new ArgumentNullException(nameof(stream));
             }
             if (!stream.CanRead)
             {
-                throw ExceptionFactory.CreateArgumentException("stream", "The stream does not allow reading (CanRead property returns false).");
+                throw new ArgumentException($"The stream does not allow reading ({nameof(stream.CanRead)} property returns false).", nameof(stream));
             }
-            if(headerLoader == null)
+            if (headerLoader == null)
             {
-                throw new ArgumentNullException("headerLoader");
+                throw new ArgumentNullException(nameof(headerLoader));
             }
 
-            var binaryReader = new BinaryReader(stream);
-            var header = headerLoader.Load(binaryReader);
-            return new Table(header, binaryReader);
+            Header header = headerLoader.Load(stream);
+            return new Table(header, stream);
         }
 
         /// <summary>
-        /// Initializes a new instance from the specified header and binary reader.
+        /// Opens a table from the specified file.
         /// </summary>
-        /// <param name="header">The dBASE header.</param>
-        /// <param name="reader">The binary reader positioned at the firsh byte of the first row.</param>
-        /// <exception cref="ArgumentNullException"><paramref name="header"/> is <c>null</c> or <paramref name="reader"/> is <c>null</c>.</exception>
-        protected Table(Header header, BinaryReader reader)
+        /// <param name="path">The file to be opened.</param>
+        /// <returns>A table instance.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="path"/> is <c>null</c> or empty.</exception>
+        public static Task<Table> OpenAsync(string path)
         {
-            if (header == null)
+            if (string.IsNullOrEmpty(path))
             {
-                throw new ArgumentNullException("header");
-            }
-            if (reader == null)
-            {
-                throw new ArgumentNullException("reader");
+                throw new ArgumentNullException(nameof(path));
             }
 
-            _reader = reader;
-            _header = header;
+            const int DEFAULT_BUFFER = 4096;
+            var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, DEFAULT_BUFFER, useAsync: true);
+
+            return OpenAsync(stream);
         }
 
         /// <summary>
-        /// Gets a list of all columns in the table.
+        /// Opens a table from the specified stream.
         /// </summary>
-        /// <exception cref="ObjectDisposedException">The table is disposed.</exception>
-        public ReadOnlyCollection<IColumn> Columns
+        /// <param name="stream">The stream of dBASE table to open. The stream is closed when the returned table instance is disposed.</param>
+        /// <returns>A table instance.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c>.</exception>
+        /// <exception cref="ArgumentException"><paramref name="stream"/> does not allow reading.</exception>
+        public static Task<Table> OpenAsync(Stream stream)
         {
-            get
-            {
-                ThrowIfDisposed();
-
-                return _header.Columns;
-            }
+            return OpenAsync(stream, HeaderLoader.Default);
         }
 
         /// <summary>
-        /// Gets a date the table was last modified.
+        /// Opens a table from the specified stream with the specified header loader.
         /// </summary>
-        public DateTime LastModified
+        /// <param name="stream">The stream of dBASE table to open. The stream is closed when the returned table instance is disposed.</param>
+        /// <param name="headerLoader">The header loader.</param>
+        /// <returns>A table instance.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="stream"/> is <c>null</c> or <paramref name="headerLoader"/> is <c>null</c>.</exception>
+        /// <exception cref="ArgumentException"><paramref name="stream"/> does not allow reading.</exception>
+        /// <exception cref="NotSupportedException">The dBASE table constains one or more columns of unsupported type.</exception>
+        public static async Task<Table> OpenAsync(Stream stream, HeaderLoader headerLoader)
         {
-            get
+            if (stream == null)
             {
-                ThrowIfDisposed();
-
-                return _header.LastModified;
+                throw new ArgumentNullException(nameof(stream));
             }
+            if (!stream.CanRead)
+            {
+                throw new ArgumentException($"The stream does not allow reading ({nameof(stream.CanRead)} property returns false).", nameof(stream));
+            }
+            if (headerLoader == null)
+            {
+                throw new ArgumentNullException(nameof(headerLoader));
+            }
+
+            Header header = await headerLoader.LoadAsync(stream).ConfigureAwait(false);
+            return new Table(header, stream);
         }
 
         /// <summary>
-        /// Opens a reader of the table with the default <c>ASCII</c> encoding. Only one reader per table can be opened.
+        /// Closes the underlying stream.
         /// </summary>
-        /// <returns>A reader of the table.</returns>
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            Disposing();
+            _disposed = true;
+        }
+
+        void IParentTable.ThrowIfDisposed()
+        {
+            ThrowIfDisposed();
+        }
+
+        /// <summary>
+        /// Opens a reader of the table with the default <c>UTF-8</c> encoding. Only one reader per table can be opened.
+        /// </summary>
+        /// <returns>A <see cref="Reader"/> instance.</returns>
         /// <exception cref="InvalidOperationException">Another reader of the table is opened.</exception>
         /// <exception cref="ObjectDisposedException">The table is disposed.</exception>
         public Reader OpenReader()
         {
-            return OpenReader(Encoding.ASCII);
+            return OpenReader(DefaultEncoding);
         }
 
         /// <summary>
         /// Opens a reader of the table with the specified encoding. Only one reader per table can be opened.
         /// </summary>
         /// <param name="encoding">The encoding that is used to load the rows content.</param>
-        /// <returns>A reader of the table.</returns>
+        /// <returns>A <see cref="Reader"/> instance.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="encoding"/> is <c>null</c>.</exception>
         /// <exception cref="InvalidOperationException">Another reader of the table is opened.</exception>
         /// <exception cref="ObjectDisposedException">The table is disposed.</exception>
@@ -154,14 +250,15 @@ namespace NDbfReader
         {
             if (encoding == null)
             {
-                throw new ArgumentNullException("encoding");
+                throw new ArgumentNullException(nameof(encoding));
             }
+
             ThrowIfDisposed();
+
             if (_isReaderOpened)
             {
                 throw new InvalidOperationException("The table can open only one reader.");
             }
-
             _isReaderOpened = true;
 
             return CreateReader(encoding);
@@ -179,20 +276,6 @@ namespace NDbfReader
         }
 
         /// <summary>
-        /// Closes the underlying stream.
-        /// </summary>
-        public void Dispose()
-        {
-            if (_disposed)
-            {
-                return;
-            }
-
-            Disposing();
-            _disposed = true;
-        }
-
-        /// <summary>
         /// Releases the underlying stream.
         /// <remarks>
         /// The method is called only when the <see cref="Dispose"/> method is called for the first time.
@@ -201,18 +284,7 @@ namespace NDbfReader
         /// </summary>
         protected virtual void Disposing()
         {
-            _reader.Dispose();
-        }
-
-        /// <summary>
-        /// Gets a dBASE header.
-        /// </summary>
-        protected Header Header
-        {
-            get
-            {
-                return _header;
-            }
+            _stream.Dispose();
         }
 
         /// <summary>
@@ -224,21 +296,6 @@ namespace NDbfReader
             {
                 throw new ObjectDisposedException(GetType().FullName);
             }
-        }
-
-        Header IParentTable.Header
-        {
-            get { return Header; }
-        }
-
-        BinaryReader IParentTable.BinaryReader
-        {
-            get { return _reader; }
-        }
-
-        void IParentTable.ThrowIfDisposed()
-        {
-            ThrowIfDisposed();
         }
     }
 }

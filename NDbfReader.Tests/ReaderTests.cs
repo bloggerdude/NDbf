@@ -1,14 +1,13 @@
-﻿using FluentAssertions;
-using NDbfReader.Tests.Infrastructure;
-using NSubstitute;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
+using FluentAssertions;
+using NDbfReader.Tests.Infrastructure;
 using Xunit;
-using Xunit.Extensions;
 
 namespace NDbfReader.Tests
 {
@@ -17,6 +16,486 @@ namespace NDbfReader.Tests
         private const string EXPECTED_NO_ROWS_EXCEPTION_MESSAGE = "No row is loaded. Call Read method first and check whether it returns true.";
 
         private const string ZERO_SIZE_COLUMN_NAME = "KRAJID";
+
+        [Theory]
+        [InlineData(typeof(string))]
+        [InlineData(typeof(IColumn))]
+        public void GetBytes_InvalidOffset_ThrowsArgumentOutException(Type columnParameterType)
+        {
+            using (var table = Samples.OpenBasicTable())
+            {
+                Reader reader = table.OpenReader();
+                reader.Read();
+                var column = table.Columns.First();
+
+                var exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => ExecuteGetBytesMethod(reader, columnParameterType, column, buffer: new byte[column.Size], offset: column.Size + 1));
+                exception.ParamName.ShouldBeEquivalentTo("offset");
+            }
+        }
+
+        [Theory]
+        [InlineData(typeof(string))]
+        [InlineData(typeof(IColumn))]
+        public void GetBytes_NullBuffer_ThrowsArgumentNullException(Type columnParameterType)
+        {
+            using (var table = Samples.OpenBasicTable())
+            {
+                Reader reader = table.OpenReader();
+                reader.Read();
+                var column = table.Columns.First();
+
+                var exception = Assert.Throws<ArgumentNullException>(() => ExecuteGetBytesMethod(reader, columnParameterType, column, buffer: null));
+                exception.ParamName.ShouldBeEquivalentTo("buffer");
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode(typeof(string), 0)]
+        [InlineDataWithExecMode(typeof(string), 5)]
+        [InlineDataWithExecMode(typeof(IColumn), 0)]
+        [InlineDataWithExecMode(typeof(IColumn), 5)]
+        public async Task GetBytes_ReturnsData(bool useAsync, Type columnParameterType, int offset)
+        {
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var reader = table.OpenReader();
+                reader.Read();
+                var dateColumn = table.Columns[1];
+                var buffer = new byte[dateColumn.Size + offset];
+
+                ExecuteGetBytesMethod(reader, columnParameterType, dateColumn, buffer, offset);
+
+                buffer.Skip(offset).ShouldAllBeEquivalentTo(new byte[] { 50, 48, 49, 52, 48, 50, 50, 48 }, opt => opt.WithStrictOrdering());
+            }
+        }
+
+        [Theory]
+        [InlineData(typeof(string))]
+        [InlineData(typeof(IColumn))]
+        public void GetBytes_SmallBuffer_ThrowsArgumentException(Type columnParameterType)
+        {
+            using (var table = Samples.OpenBasicTable())
+            {
+                Reader reader = table.OpenReader();
+                reader.Read();
+                var column = table.Columns.First();
+
+                var exception = Assert.Throws<ArgumentException>(() => ExecuteGetBytesMethod(reader, columnParameterType, column, buffer: new byte[column.Size], offset: 1));
+                exception.ParamName.ShouldBeEquivalentTo("buffer");
+                exception.Message.Should().StartWith($"The buffer is too small. Increase the capacity to at least {column.Size + 1} bytes.");
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task GetDecimal_ValueWithWhitespace_ReturnsValue(bool useAsync)
+        {
+            using (var table = await this.Exec(() => Table.Open(EmbeddedSamples.GetStream(EmbeddedSamples.WHITE_SPACES)), useAsync))
+            {
+                var reader = table.OpenReader(Encoding.GetEncoding(1250));
+                await reader.Exec(r => r.Read(), useAsync);
+
+                decimal? actualValue = reader.GetDecimal("OBJ_SEQ");
+                actualValue.ShouldBeEquivalentTo(11085340);
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task GetDecimal_ZeroSizeColumnInstance_ReturnsNull(bool useAsync)
+        {
+            return GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetDecimal(GetZeroSizeColumn(reader.Table)), useAsync);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task GetDecimal_ZeroSizeColumnName_ReturnsNull(bool useAsync)
+        {
+            return GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetDecimal(ZERO_SIZE_COLUMN_NAME), useAsync);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode("GetString", "TEXT")]
+        [InlineDataWithExecMode("GetValue", "TEXT")]
+        [InlineDataWithExecMode("GetDecimal", "NUMERIC")]
+        [InlineDataWithExecMode("GetValue", "NUMERIC")]
+        [InlineDataWithExecMode("GetBoolean", "LOGICAL")]
+        [InlineDataWithExecMode("GetValue", "LOGICAL")]
+        [InlineDataWithExecMode("GetDate", "DATE")]
+        [InlineDataWithExecMode("GetValue", "DATE")]
+        [InlineDataWithExecMode("GetInt32", "LONG")]
+        [InlineDataWithExecMode("GetValue", "LONG")]
+        public async Task GetMethod_ColumnInstance_ReturnsValue(bool useAsync, string methodName, string columnName)
+        {
+            // Arrange
+            var actualValues = new List<object>();
+            var expectedValues = Samples.BasicTableContent[columnName];
+
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var reader = table.OpenReader();
+                var column = table.Columns.Single(c => c.Name == columnName);
+
+                // Act
+                while (await reader.Exec(r => r.Read(), useAsync))
+                {
+                    actualValues.Add(ExecuteGetMethod(reader, methodName, typeof(IColumn), column));
+                }
+            }
+
+            //Assert
+            actualValues.ShouldAllBeEquivalentTo(expectedValues, opt => opt.WithStrictOrdering());
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public void GetMethod_ColumnInstanceFromDifferentTable_ThrowsArgumentOutOfRangeExeptionException(string methodName)
+        {
+            // Arrange
+            Type columnType = typeof(Reader)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                .SingleOrDefault(m => m.Name == methodName && m.GetParameters().First().ParameterType == typeof(IColumn))
+                .ReturnType;
+
+            if (columnType == typeof(void))
+            {
+                // GetBytes method
+                columnType = typeof(object);
+            }
+
+            using (var differentTable = Samples.OpenBasicTable())
+            using (var table = Samples.OpenBasicTable())
+            {
+                IColumn differentColumn = null;
+                if (columnType == typeof(object))
+                {
+                    differentColumn = differentTable.Columns.First();
+                }
+                else
+                {
+                    differentColumn = differentTable.Columns.Single(c => c.Type == columnType);
+                }
+
+                var reader = table.OpenReader();
+                reader.Read();
+
+                // Act & Assert
+                var exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => ExecuteGetMethod(reader, methodName, parameterType: typeof(IColumn), columnNameOrInstance: differentColumn));
+
+                exception.ParamName.Should().BeEquivalentTo("column");
+                exception.Message.Should().StartWithEquivalent("The column instance not found.");
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode("GetString", "TEXT")]
+        [InlineDataWithExecMode("GetValue", "TEXT")]
+        [InlineDataWithExecMode("GetDecimal", "NUMERIC")]
+        [InlineDataWithExecMode("GetValue", "NUMERIC")]
+        [InlineDataWithExecMode("GetBoolean", "LOGICAL")]
+        [InlineDataWithExecMode("GetValue", "LOGICAL")]
+        [InlineDataWithExecMode("GetDate", "DATE")]
+        [InlineDataWithExecMode("GetValue", "DATE")]
+        [InlineDataWithExecMode("GetInt32", "LONG")]
+        [InlineDataWithExecMode("GetValue", "LONG")]
+        public async Task GetMethod_ColumnName_ReturnsValue(bool useAsync, string methodName, string columnName)
+        {
+            // Arrange
+            var actualValues = new List<object>();
+            var expectedValues = Samples.BasicTableContent[columnName];
+
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var reader = table.OpenReader();
+
+                // Act
+                while (await reader.Exec(r => r.Read(), useAsync))
+                {
+                    actualValues.Add(ExecuteGetMethod(reader, methodName, typeof(string), columnName));
+                }
+            }
+
+            //Assert
+            actualValues.ShouldAllBeEquivalentTo(expectedValues, opt => opt.WithStrictOrdering());
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public void GetMethod_DisposedTable_ThrowsObjectDisposedException(string methodName, Type parameterType)
+        {
+            PublicInterfaceInteraction_DisposedTable_ThrowsObjectDisposedException(
+                reader => ExecuteGetMethod(reader, methodName, parameterType, GetValidArgument(reader, methodName, parameterType)));
+        }
+
+        [Theory]
+        [ReaderGetMethods(exclude: new[] { "GetValue", nameof(Reader.GetBytes) })]
+        public void GetMethod_MismatchedColumnInstance_ThrowsArgumentOutOfRangeExeptionException(string methodName)
+        {
+            // Arrange
+            using (var table = Samples.OpenBasicTable())
+            {
+                var reader = table.OpenReader();
+                reader.Read();
+
+                // Act & Assert
+                var exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => ExecuteGetMethod(reader, methodName, parameterType: typeof(IColumn), columnNameOrInstance: GetMismatchedColumnInstance(reader, methodName)));
+
+                exception.ParamName.Should().BeEquivalentTo("column");
+                exception.Message.Should().StartWithEquivalent("The column's type does not match the method's return type.");
+            }
+        }
+
+        [Theory]
+        [ReaderGetMethods(exclude: new[] { "GetValue", nameof(Reader.GetBytes) })]
+        public void GetMethod_MismatchedColumnName_ThrowsArgumentOutOfRangeExeptionException(string methodName)
+        {
+            // Arrange
+            using (var table = Samples.OpenBasicTable())
+            {
+                var reader = table.OpenReader();
+                reader.Read();
+
+                // Act & Assert
+                var exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => ExecuteGetMethod(reader, methodName, parameterType: typeof(string), columnNameOrInstance: GetMismatchedColumnName(reader, methodName)));
+
+                exception.ParamName.Should().BeEquivalentTo("columnName");
+                exception.Message.Should().StartWithEquivalent("The column's type does not match the method's return type.");
+            }
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public void GetMethod_NonExistingColumnName_ThrowsArgumentOutOfRangeException(string getMethodName)
+        {
+            GetMethod_InvalidColumnName_ThrowsArgumentOutOfRangeException("FOO", getMethodName);
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public void GetMethod_NullColumnInstance_ThrowsArgumentNullExeptionException(string methodName)
+        {
+            GetMethod_NullParameter_ThrowsArgumentNullExeptionException(methodName, typeof(IColumn), "column");
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public void GetMethod_NullColumnName_ThrowsArgumentNullExeptionException(string methodName)
+        {
+            GetMethod_NullParameter_ThrowsArgumentNullExeptionException(methodName, typeof(string), "columnName");
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task GetMethod_PreviousColumnInstanceOnSeekableStream_ReturnsCorrectValue(bool useAsync)
+        {
+            // Arrange
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var reader = table.OpenReader();
+
+                await reader.Exec(r => r.Read(), useAsync);
+
+                var dateColumn = table.Columns[1];
+                var textColumn = table.Columns[0];
+
+                // Act
+                reader.GetDate(dateColumn);
+                var actualText = reader.GetString(textColumn);
+
+                // Assert
+                var expectedText = Samples.BasicTableContent["TEXT"].First();
+                Assert.Equal(expectedText, actualText);
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task GetMethod_PreviousColumnNameOnSeekableStream_ReturnsCorrectValue(bool useAsync)
+        {
+            // Arrange
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var reader = table.OpenReader();
+
+                await reader.Exec(r => r.Read(), useAsync);
+
+                // Act
+                reader.GetDate("DATE");
+                var actualText = reader.GetString("TEXT");
+
+                // Assert
+                var expectedText = Samples.BasicTableContent["TEXT"].First();
+                Assert.Equal(expectedText, actualText);
+            }
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public void GetMethod_ReadMethodNeverCalled_ThrowsInvalidOperationException(string methodName, Type parameterType)
+        {
+            // Arrange
+            using (var table = Samples.OpenBasicTable())
+            {
+                var reader = table.OpenReader();
+
+                // Act & Assert
+                var exception = Assert.Throws<InvalidOperationException>(() => ExecuteGetMethod(reader, methodName, parameterType, GetValidArgument(reader, methodName, parameterType)));
+                Assert.Equal(EXPECTED_NO_ROWS_EXCEPTION_MESSAGE, exception.Message);
+            }
+        }
+
+        [Theory]
+        [ReaderGetMethods]
+        public async Task GetMethod_ReadMethodReturnedFalse_ThrowsInvalidOperationException(bool useAsync, string methodName, Type parameterType)
+        {
+            // Arrange
+            using (var table = await OpenBasicTable(useAsync))
+            {
+                var reader = table.OpenReader();
+
+                while (await reader.Exec(r => r.Read(), useAsync)) { }
+
+                // Act & Assert
+                var exception = Assert.Throws<InvalidOperationException>(() => ExecuteGetMethod(reader, methodName, parameterType, GetValidArgument(reader, methodName, parameterType)));
+
+                Assert.Equal(EXPECTED_NO_ROWS_EXCEPTION_MESSAGE, exception.Message);
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task GetMethod_RepeatedColumnInstanceOnSeeeakbleStream_ReturnsTheSameValue(bool useAsync)
+        {
+            return GetMethod_RepeatedColumnOnSeekableStream_ReturnsTheSameValue(useAsync, reader => reader.GetDate(reader.Table.Columns[1]));
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task GetMethod_RepeatedColumnNameOnSeeeakbleStream_ReturnsTheSameValue(bool useAsync)
+        {
+            return GetMethod_RepeatedColumnOnSeekableStream_ReturnsTheSameValue(useAsync, reader => reader.GetDate("DATE"));
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task GetString_ReaderOfTableWithCzechTextsOpenedWithCzechEncoding_ReturnsCorrectlyEncodedString(bool useAsync)
+        {
+            // Arrange
+            Stream stream = EmbeddedSamples.GetStream(EmbeddedSamples.CZECH_ENCODING);
+            using (var table = await this.Exec(() => Table.Open(stream), useAsync))
+            {
+                var reader = table.OpenReader(Encoding.GetEncoding(1250));
+
+                var expectedItems = new List<string> { "Mateřská škola Deštná", "Tělocvična Deštná", "Městský úřad Deštná" };
+                var actualItems = new List<string>();
+
+                // Act
+                while (await reader.Exec(r => r.Read(), useAsync))
+                {
+                    actualItems.Add(reader.GetString("DS"));
+                }
+
+                // Assert
+                actualItems.ShouldAllBeEquivalentTo(expectedItems, opt => opt.WithStrictOrdering());
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task GetValue_UnsupportedColumn_ReturnsBytes(bool useAsync)
+        {
+            using (var table = await this.Exec(() => Table.Open(EmbeddedSamples.GetStream(EmbeddedSamples.UNSUPPORTED_TYPES)), useAsync))
+            {
+                Reader reader = table.OpenReader();
+                for (int i = 0; i < 3; i++)
+                {
+                    await reader.Exec(r => r.Read(), useAsync);
+                }
+
+                var actualBytes = reader.GetValue("UNITPRICE") as byte[];
+                var expectedBytes = new byte[] { 160, 134, 1, 0, 0, 0, 0, 0 };
+                actualBytes.ShouldAllBeEquivalentTo(expectedBytes, opt => opt.WithStrictOrdering());
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task GetValue_ZeroSizeColumnInstance_ReturnsNull(bool useAsync)
+        {
+            return GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetValue(GetZeroSizeColumn(reader.Table)), useAsync);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task GetValue_ZeroSizeColumnName_ReturnsNull(bool useAsync)
+        {
+            return GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetValue(ZERO_SIZE_COLUMN_NAME), useAsync);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task Read_RepeatedCall_SkipsRows(bool useAsync)
+        {
+            object[] expectedSecondRowContent = Samples.BasicTableContent.Select(pair => pair.Value[1]).ToArray();
+
+            using (Table table = await OpenBasicTable(useAsync))
+            {
+                Reader reader = table.OpenReader();
+                await reader.Exec(r => r.Read(), useAsync);
+                await reader.Exec(r => r.Read(), useAsync);
+
+                object[] secondRowContent = table.Columns.Select(reader.GetValue).ToArray();
+
+                secondRowContent.ShouldAllBeEquivalentTo(expectedSecondRowContent, opt => opt.WithStrictOrdering());
+            }
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public async Task Read_TableBasedOnNonSeekableStream_ReadsAllRowsAsUsual(bool useAsync)
+        {
+            // Arrange
+            var stream = EmbeddedSamples.GetStream(EmbeddedSamples.BASIC).ToNonSeekable();
+
+            // Act
+            int rowsCount = 0;
+            using (var table = await this.Exec(() => Table.Open(stream), useAsync))
+            {
+                var reader = table.OpenReader();
+
+                while (await reader.Exec(r => r.Read(), useAsync))
+                {
+                    rowsCount += 1;
+                }
+            }
+
+            // Assert
+            Assert.Equal(3, rowsCount);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task Read_TableOnNonSeekableStreamWithDeletedRows_SkipsDeletedRows(bool useAsync)
+        {
+            return Read_TableWithDeletedRows_SkipsDeletedRows(useAsync, StreamExtensions.ToNonSeekable);
+        }
+
+        [Theory]
+        [InlineDataWithExecMode]
+        public Task Read_TableWithDeletedRows_SkipsDeletedRows(bool useAsync)
+        {
+            return Read_TableWithDeletedRows_SkipsDeletedRows(useAsync, stream => stream);
+        }
+
+        [Fact]
+        public void Table_DisposedTable_ThrowsObjectDisposedException()
+        {
+            PublicInterfaceInteraction_DisposedTable_ThrowsObjectDisposedException(reader => reader.Table);
+        }
 
         [Fact]
         public void Table_OpenedReader_ReturnsReferenceToTheParentTable()
@@ -35,127 +514,6 @@ namespace NDbfReader.Tests
         }
 
         [Fact]
-        public void Table_DisposedTable_ThrowsObjectDisposedException()
-        {
-            PublicInterfaceInteraction_DisposedTable_ThrowsObjectDisposedException(reader => reader.Table);
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_DisposedTable_ThrowsObjectDisposedException(string methodName, Type parameterType)
-        {
-            PublicInterfaceInteraction_DisposedTable_ThrowsObjectDisposedException(
-                reader => ExecuteGetMethod(reader, methodName, parameterType, GetValidArgument(reader, parameterType)));
-        }
-
-        [Theory]
-        [ReaderGetMethods(exclude: "GetValue")]
-        public void GetMethod_MismatchedColumnInstance_ThrowsArgumentOutOfRangeExeptionException(string methodName)
-        {
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-                reader.Read();
-
-                // Act & Assert
-                var exception = Assert.Throws<ArgumentOutOfRangeException>(
-                    () => ExecuteGetMethod(reader, methodName, parameterType: typeof(IColumn), parameter: GetMismatchedColumnInstance(reader, methodName)));
-
-                exception.ParamName.Should().BeEquivalentTo("column");
-                exception.Message.Should().StartWithEquivalent("The column's type does not match the method's return type.");
-            }
-        }
-
-        [Theory]
-        [ReaderGetMethods(exclude: "GetValue")]
-        public void GetMethod_MismatchedColumnName_ThrowsArgumentOutOfRangeExeptionException(string methodName)
-        {
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-                reader.Read();
-
-                // Act & Assert
-                var exception = Assert.Throws<ArgumentOutOfRangeException>(
-                    () => ExecuteGetMethod(reader, methodName, parameterType: typeof(string), parameter: GetMismatchedColumnName(reader, methodName)));
-
-                exception.ParamName.Should().BeEquivalentTo("columnName");
-                exception.Message.Should().StartWithEquivalent("The column's type does not match the method's return type.");
-            }
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_ColumnInstanceFromDifferentTable_ThrowsArgumentOutOfRangeExeptionException(string methodName)
-        {
-            // Arrange
-            using (var differentTable = Samples.OpenBasicTable())
-            using (var table = Samples.OpenBasicTable())
-            {
-                var differentColumn = differentTable.Columns.First();
-
-                var reader = table.OpenReader();
-                reader.Read();
-
-                // Act & Assert
-                var exception = Assert.Throws<ArgumentOutOfRangeException>(
-                    () => ExecuteGetMethod(reader, methodName, parameterType: typeof(IColumn), parameter: differentColumn));
-
-                exception.ParamName.Should().BeEquivalentTo("column");
-                exception.Message.Should().StartWithEquivalent("The column instance doesn't belong to this table.");
-            }
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_NullColumnInstance_ThrowsArgumentNullExeptionException(string methodName)
-        {
-            GetMethod_NullParameter_ThrowsArgumentNullExeptionException(methodName, typeof(IColumn), "column");
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_NullColumnName_ThrowsArgumentNullExeptionException(string methodName)
-        {
-            GetMethod_NullParameter_ThrowsArgumentNullExeptionException(methodName, typeof(string), "columnName");
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_NonExistingColumnName_ThrowsArgumentOutOfRangeException(string methodName)
-        {
-            var nonExistingColumnName = "FOO";
-
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-                reader.Read();
-
-                // Act & Assert
-                var exception = Assert.Throws<ArgumentOutOfRangeException>(() => ExecuteGetMethod(reader, methodName, parameterType: typeof(string), parameter: nonExistingColumnName));
-                exception.ParamName.Should().BeEquivalentTo("columnName");
-                exception.Message.Should().StartWithEquivalent("Column " + nonExistingColumnName + " not found.");
-            }
-        }
-
-        [Fact]
-        public void TextEncoding_ReaderOpenedWithUnspecifiedEncoding_ReturnsTheASCIIEncoding()
-        {
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
-            {
-                // Act
-                var reader = table.OpenReader();
-
-                // Assert 
-                Assert.Same(Encoding.ASCII, reader.Encoding);
-            }
-        }
-
-        [Fact]
         public void TextEncoding_ReaderOpenedWithEncoding_ReturnsTheSameEncoding()
         {
             // Arrange
@@ -166,300 +524,84 @@ namespace NDbfReader.Tests
                 // Act
                 var reader = table.OpenReader(utf8Encoding);
 
-                // Assert 
+                // Assert
                 Assert.Same(utf8Encoding, reader.Encoding);
             }
         }
 
         [Fact]
-        public void Read_TableBasedOnNonSeekableStream_ReadsAllRowsAsUsual()
-        {
-            // Arrange
-            var streamSpy = Spy.OnStream(EmbeddedSamples.GetStream(EmbeddedSamples.BASIC));
-            streamSpy.CanSeek.Returns(false);
-            streamSpy.Seek(Arg.Any<long>(), Arg.Any<SeekOrigin>()).Returns(x => { throw new NotSupportedException(); });
-            streamSpy.Position.Returns(x => { throw new NotSupportedException(); });
-            streamSpy.When(s => s.Position = Arg.Any<long>()).Do(x => { throw new NotSupportedException(); });
-
-            // Act
-            int rowsCount = 0;
-
-            using (var table = Table.Open(streamSpy))
-            {
-                var reader = table.OpenReader();
-
-                while (reader.Read())
-                    rowsCount += 1;
-            }
-
-            // Assert
-            Assert.Equal(3, rowsCount);
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_ReadMethodNeverCalled_ThrowsInvalidOperationException(string methodName, Type parameterType)
+        public void TextEncoding_ReaderOpenedWithUnspecifiedEncoding_ReturnsUtf8Encoding()
         {
             // Arrange
             using (var table = Samples.OpenBasicTable())
             {
-                var reader = table.OpenReader();
-
-                // Act & Assert
-                var exception = Assert.Throws<InvalidOperationException>(() => ExecuteGetMethod(reader, methodName, parameterType, GetValidArgument(reader, parameterType)));
-                Assert.Equal(EXPECTED_NO_ROWS_EXCEPTION_MESSAGE, exception.Message);
-            }
-        }
-
-        [Theory]
-        [ReaderGetMethods]
-        public void GetMethod_ReadMethodReturnedFalse_ThrowsInvalidOperationException(string methodName, Type parameterType)
-        {
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-
-                while (reader.Read()) { }
-
-                // Act & Assert
-                var exception = Assert.Throws<InvalidOperationException>(() => ExecuteGetMethod(reader, methodName, parameterType, GetValidArgument(reader, parameterType)));
-
-                Assert.Equal(EXPECTED_NO_ROWS_EXCEPTION_MESSAGE, exception.Message);
-            }
-        }
-
-
-        [Theory]
-        [InlineData("GetString", "TEXT")]
-        [InlineData("GetValue", "TEXT")]
-        [InlineData("GetDecimal", "NUMERIC")]
-        [InlineData("GetValue", "NUMERIC")]
-        [InlineData("GetBoolean", "LOGICAL")]
-        [InlineData("GetValue", "LOGICAL")]
-        [InlineData("GetDate", "DATE")]
-        [InlineData("GetValue", "DATE")]
-        [InlineData("GetInt32", "LONG")]
-        [InlineData("GetValue", "LONG")]
-        public void GetMethod_ColumnName_ReturnsValue(string methodName, string columnName)
-        {
-            // Arrange
-            var actualValues = new List<object>();
-            var expectedValues = Samples.BasicTableContent[columnName];
-
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-
                 // Act
-                while (reader.Read())
+                var reader = table.OpenReader();
+
+                // Assert
+                Assert.Same(Encoding.UTF8, reader.Encoding);
+            }
+        }
+
+        private static void ExecuteGetBytesMethod(Reader reader, Type columnParameterType, IColumn column, byte[] buffer, int offset = 0)
+        {
+            MethodInfo method = typeof(Reader).GetMethod(nameof(Reader.GetBytes), new[] { columnParameterType, typeof(byte[]), typeof(int) });
+            object columnParameter = (columnParameterType == typeof(string) ? (object)column.Name : column);
+
+            try
+            {
+                method.Invoke(reader, new[] { columnParameter, buffer, offset });
+            }
+            catch (TargetInvocationException e)
+            {
+                throw e.InnerException;
+            }
+        }
+
+        private static object ExecuteGetMethod(Reader reader, string methodName, Type parameterType, object columnNameOrInstance = null)
+        {
+            var methodInfo = typeof(Reader)
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .SingleOrDefault(m => m.Name == methodName && m.GetParameters().First().ParameterType == parameterType);
+
+            if (methodInfo == null)
+            {
+                throw new ArgumentOutOfRangeException(nameof(methodName), "Method " + methodName + " not found.");
+            }
+
+            var parameters = new List<object>() { columnNameOrInstance };
+            ParameterInfo[] declaredParameters = methodInfo.GetParameters();
+            if (declaredParameters.Length > 1)
+            {
+                // GetBytes method
+                if (columnNameOrInstance == null)
                 {
-                    actualValues.Add(ExecuteGetMethod(reader, methodName, typeof(string), columnName));
+                    // buffer parameter
+                    parameters.Add(new byte[1]);
                 }
-            }
-
-            //Assert
-            actualValues.ShouldAllBeEquivalentTo(expectedValues);
-        }
-
-        [Theory]
-        [InlineData("GetString", "TEXT")]
-        [InlineData("GetValue", "TEXT")]
-        [InlineData("GetDecimal", "NUMERIC")]
-        [InlineData("GetValue", "NUMERIC")]
-        [InlineData("GetBoolean", "LOGICAL")]
-        [InlineData("GetValue", "LOGICAL")]
-        [InlineData("GetDate", "DATE")]
-        [InlineData("GetValue", "DATE")]
-        [InlineData("GetInt32", "LONG")]
-        [InlineData("GetValue", "LONG")]
-        public void GetMethod_ColumnInstance_ReturnsValue(string methodName, string columnName)
-        {
-            // Arrange
-            var actualValues = new List<object>();
-            var expectedValues = Samples.BasicTableContent[columnName];
-
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-                var column = table.Columns.Single(c => c.Name == columnName);
-
-                // Act
-                while (reader.Read())
+                else
                 {
-                    actualValues.Add(ExecuteGetMethod(reader, methodName, typeof(IColumn), column));
-                }
-            }
-
-            //Assert
-            actualValues.ShouldAllBeEquivalentTo(expectedValues);
-        }
-
-        [Fact]
-        public void Read_TableWithDeletedRows_SkipsDeletedRows()
-        {
-            // Arrange
-            using (var table = Table.Open(EmbeddedSamples.GetStream(EmbeddedSamples.DELETED_ROWS)))
-            {
-                var reader = table.OpenReader();
-                var expectedItems = new List<string>() { "text3" };
-                var actualItems = new List<string>();
-
-                // Act
-                while (reader.Read())
-                {
-                    actualItems.Add(reader.GetString("NAME"));
+                    var column = columnNameOrInstance as IColumn;
+                    if (column == null)
+                    {
+                        // it's column name, lets find the instance
+                        column = reader.Table.Columns.SingleOrDefault(c => c.Name == (string)columnNameOrInstance);
+                    }
+                    // buffer parameter
+                    parameters.Add(new byte[column?.Size ?? 1]);
                 }
 
-                // Assert
-                actualItems.ShouldAllBeEquivalentTo(expectedItems);
+                // offset parameter
+                parameters.Add(0);
             }
-        }
 
-        [Fact]
-        public void GetString_ReaderOfTableWithCzechTextsOpenedWithCzechEncoding_ReturnsCorrectlyEncodedString()
-        {
-            // Arrange
-            using (var table = Table.Open(EmbeddedSamples.GetStream(EmbeddedSamples.CZECH_ENCODING)))
+            try
             {
-                var reader = table.OpenReader(Encoding.GetEncoding(1250));
-
-                var expectedItems = new List<string>() { "Mateřská škola Deštná", "Tělocvična Deštná", "Městský úřad Deštná" };
-                var actualItems = new List<string>();
-
-                // Act
-                while (reader.Read())
-                {
-                    actualItems.Add(reader.GetString("DS"));
-                }
-
-                // Assert
-                actualItems.ShouldAllBeEquivalentTo(expectedItems);
+                return methodInfo.Invoke(reader, parameters.ToArray());
             }
-        }
-
-        [Fact]
-        public void GetMethod_PreviousColumnNameOnNonSeekableStream_ThrowsInvalidOperationException()
-        {
-            GetMethod_OutOfOrderColumnOnNonSeekableStream_ThrowsInvalidOperationException(reader => reader.GetDate("DATE"), reader => reader.GetString("TEXT"));
-        }
-
-        [Fact]
-        public void GetMethod_RepeatedColumnNameOnNonSeekableStream_ThrowsInvalidOperationException()
-        {
-            Action<Reader> getMethodCall = (reader) => reader.GetDate("DATE");
-
-            GetMethod_OutOfOrderColumnOnNonSeekableStream_ThrowsInvalidOperationException(getMethodCall, getMethodCall);
-        }
-
-        [Fact]
-        public void GetMethod_PreviousColumnInstanceOnNonSeekableStream_ThrowsInvalidOperationException()
-        {
-            GetMethod_OutOfOrderColumnOnNonSeekableStream_ThrowsInvalidOperationException(reader => reader.GetDate(reader.Table.Columns[1]), reader => reader.GetString(reader.Table.Columns[0]));
-        }
-
-        [Fact]
-        public void GetMethod_RepeatedColumnInstanceOnNonSeekableStream_ThrowsInvalidOperationException()
-        {
-            Action<Reader> getMethodCall = (reader) => reader.GetDate(reader.Table.Columns[1]);
-
-            GetMethod_OutOfOrderColumnOnNonSeekableStream_ThrowsInvalidOperationException(getMethodCall, getMethodCall);
-        }
-
-        [Fact]
-        public void GetMethod_PreviousColumnInstanceOnSeekableStream_ReturnsCorrectValue()
-        {
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
+            catch (TargetInvocationException e)
             {
-                var reader = table.OpenReader();
-
-                reader.Read();
-
-                var dateColumn = table.Columns[1];
-                var textColumn = table.Columns[0];
-
-                // Act
-                reader.GetDate(dateColumn);
-                var actualText = reader.GetString(textColumn);
-
-                // Assert
-                var expectedText = Samples.BasicTableContent["TEXT"].First();
-                Assert.Equal(expectedText, actualText);
-            }
-        }
-
-        [Fact]
-        public void GetMethod_PreviousColumnNameOnSeekableStream_ReturnsCorrectValue()
-        {
-            // Arrange
-            using (var table = Samples.OpenBasicTable())
-            {
-                var reader = table.OpenReader();
-
-                reader.Read();
-
-                // Act
-                reader.GetDate("DATE");
-                var actualText = reader.GetString("TEXT");
-
-                // Assert
-                var expectedText = Samples.BasicTableContent["TEXT"].First();
-                Assert.Equal(expectedText, actualText);
-            }
-        }
-
-        [Fact]
-        public void GetMethod_RepeatedColumnInstanceOnSeeeakbleStream_ReturnsTheSameValue()
-        {
-            GetMethod_RepeatedColumnOnSeekableStream_ReturnsTheSameValue(reader => reader.GetDate(reader.Table.Columns[1]));
-        }
-
-        [Fact]
-        public void GetMethod_RepeatedColumnNameOnSeeeakbleStream_ReturnsTheSameValue()
-        {
-            GetMethod_RepeatedColumnOnSeekableStream_ReturnsTheSameValue(reader => reader.GetDate("DATE"));
-        }
-
-        [Fact]
-        public void GetDecimal_ZeroSizeColumnName_ReturnsNull()
-        {
-            GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetDecimal(ZERO_SIZE_COLUMN_NAME));
-        }
-
-        [Fact]
-        public void GetValue_ZeroSizeColumnName_ReturnsNull()
-        {
-            GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetValue(ZERO_SIZE_COLUMN_NAME));
-        }
-
-        [Fact]
-        public void GetDecimal_ZeroSizeColumnInstance_ReturnsNull()
-        {
-            GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetDecimal(GetZeroSizeColumn(reader.Table)));
-        }
-
-        [Fact]
-        public void GetValue_ZeroSizeColumnInstance_ReturnsNull()
-        {
-            GetMethod_ZeroSizeColumn_ReturnsNull(reader => reader.GetValue(GetZeroSizeColumn(reader.Table)));
-        }
-
-        private void GetMethod_ZeroSizeColumn_ReturnsNull(Func<Reader, object> getter)
-        {
-            // Arrange
-            using (var table = Table.Open(EmbeddedSamples.GetStream(EmbeddedSamples.ZERO_SIZE_COLUMN)))
-            {
-                var reader = table.OpenReader(Encoding.GetEncoding(1250));
-                reader.Read();
-
-                var expectedValues = new[] { null, "ABCD"};
-
-                // Act
-                var actualValues = new[] { getter(reader), reader.GetString("CSU_KRAJ") };
-
-                // Assert
-                actualValues.ShouldAllBeEquivalentTo(expectedValues);
+                throw e.InnerException;
             }
         }
 
@@ -479,6 +621,62 @@ namespace NDbfReader.Tests
             return reader.Table.Columns.First(column => column.Type != returnType).Name;
         }
 
+        private static object GetValidArgument(Reader reader, string methodName, Type argType)
+        {
+            Type columnType = typeof(Reader)
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                .Single(m => m.Name == methodName && m.GetParameters().First().ParameterType == argType)
+                .ReturnType;
+
+            if (columnType == typeof(void))
+            {
+                // GetBytes method
+                columnType = typeof(object);
+            }
+
+            IColumn column = null;
+            if (columnType == typeof(object))
+            {
+                column = reader.Table.Columns.First();
+            }
+            else
+            {
+                column = reader.Table.Columns.Single(c => c.Type == columnType);
+            }
+
+            if (argType == typeof(string))
+            {
+                return column.Name;
+            }
+            if (argType == typeof(IColumn))
+            {
+                return column;
+            }
+
+            throw new ArgumentOutOfRangeException(nameof(argType));
+        }
+
+        private static IColumn GetZeroSizeColumn(Table table)
+        {
+            return table.Columns.Single(c => c.Name == ZERO_SIZE_COLUMN_NAME);
+        }
+
+        private void GetMethod_InvalidColumnName_ThrowsArgumentOutOfRangeException(string invalidColumnName, string getMethodName)
+        {
+            // Arrange
+            using (var table = Samples.OpenBasicTable())
+            {
+                var reader = table.OpenReader();
+                reader.Read();
+
+                // Act & Assert
+                var exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => ExecuteGetMethod(reader, getMethodName, parameterType: typeof(string), columnNameOrInstance: invalidColumnName));
+                exception.ParamName.Should().BeEquivalentTo("columnName");
+                exception.Message.Should().StartWithEquivalent($"Column {invalidColumnName} not found.");
+            }
+        }
+
         private void GetMethod_NullParameter_ThrowsArgumentNullExeptionException(string methodName, Type paramaterType, string parameterName)
         {
             // Arrange
@@ -489,21 +687,21 @@ namespace NDbfReader.Tests
 
                 // Act & Assert
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => ExecuteGetMethod(reader, methodName, parameterType: paramaterType, parameter: null));
+                    () => ExecuteGetMethod(reader, methodName, parameterType: paramaterType, columnNameOrInstance: null));
 
                 Assert.Equal(parameterName, exception.ParamName);
             }
         }
 
-        private void GetMethod_RepeatedColumnOnSeekableStream_ReturnsTheSameValue(Func<Reader, object> getCall)
+        private async Task GetMethod_RepeatedColumnOnSeekableStream_ReturnsTheSameValue(bool useAsync, Func<Reader, object> getCall)
         {
             // Arrange
-            using (var table = Samples.OpenBasicTable())
+            using (var table = await OpenBasicTable(useAsync))
             {
                 var reader = table.OpenReader();
 
-                reader.Read();
-                
+                await reader.Exec(r => r.Read(), useAsync);
+
                 // Act
                 var firstValue = getCall(reader);
                 var secondValue = getCall(reader);
@@ -511,6 +709,30 @@ namespace NDbfReader.Tests
                 // Assert
                 Assert.Equal(firstValue, secondValue);
             }
+        }
+
+        private async Task GetMethod_ZeroSizeColumn_ReturnsNull(Func<Reader, object> getter, bool useAsync)
+        {
+            // Arrange
+            Stream stream = EmbeddedSamples.GetStream(EmbeddedSamples.ZERO_SIZE_COLUMN);
+            using (var table = await this.Exec(() => Table.Open(stream), useAsync))
+            {
+                var reader = table.OpenReader(Encoding.GetEncoding(1250));
+                await reader.Exec((r) => r.Read(), useAsync);
+
+                var expectedValues = new[] { null, "ABCD" };
+
+                // Act
+                var actualValues = new[] { getter(reader), reader.GetString("CSU_KRAJ") };
+
+                // Assert
+                actualValues.ShouldAllBeEquivalentTo(expectedValues, opt => opt.WithStrictOrdering());
+            }
+        }
+
+        private Task<Table> OpenBasicTable(bool useAsync)
+        {
+            return this.Exec(() => Samples.OpenBasicTable(), useAsync);
         }
 
         private void PublicInterfaceInteraction_DisposedTable_ThrowsObjectDisposedException(Func<Reader, object> action)
@@ -525,59 +747,25 @@ namespace NDbfReader.Tests
             Assert.Equal(typeof(Table).FullName, exception.ObjectName);
         }
 
-        private void GetMethod_OutOfOrderColumnOnNonSeekableStream_ThrowsInvalidOperationException(Action<Reader> firstGetCall, Action<Reader> secondGetCall)
+        private async Task Read_TableWithDeletedRows_SkipsDeletedRows(bool useAsync, Func<Stream, Stream> streamModifier)
         {
             // Arrange
-            var nonSeeekableStream = Spy.OnStream(EmbeddedSamples.GetStream(EmbeddedSamples.BASIC));
-            nonSeeekableStream.CanSeek.Returns(false);
-
-            using (var table = Table.Open(nonSeeekableStream))
+            var stream = streamModifier(EmbeddedSamples.GetStream(EmbeddedSamples.DELETED_ROWS));
+            using (var table = await this.Exec(() => Table.Open(stream), useAsync))
             {
                 var reader = table.OpenReader();
+                var expectedItems = new List<string> { "text3" };
+                var actualItems = new List<string>();
 
-                reader.Read();
-                firstGetCall(reader);
+                // Act
+                while (await reader.Exec(r => r.Read(), useAsync))
+                {
+                    actualItems.Add(reader.GetString("NAME"));
+                }
 
-                // Act & Assert
-                var exception = Assert.Throws<InvalidOperationException>(() => secondGetCall(reader));
-                Assert.Equal("The underlying non-seekable stream does not allow reading the columns out of order.", exception.Message);
+                // Assert
+                actualItems.ShouldAllBeEquivalentTo(expectedItems, opt => opt.WithStrictOrdering());
             }
-        }
-
-        private static object GetValidArgument(Reader reader, Type type)
-        {
-            var firstColumn = reader.Table.Columns.First();
-
-            if (type == typeof(string))
-            {
-                return firstColumn.Name;
-            }
-            if (type == typeof(IColumn))
-            {
-                return firstColumn;
-            }
-
-            throw new ArgumentOutOfRangeException("type");
-        }
-
-        private static object ExecuteGetMethod(Reader reader, string methodName, Type parameterType, object parameter = null)
-        {
-            var methodInfo = typeof(Reader).GetMethod(methodName, new[] { parameterType });
-            if (methodInfo == null) throw new ArgumentOutOfRangeException("methodName", "Method " + methodName + " not found.");
-
-            try
-            {
-                return methodInfo.Invoke(reader, new object[] { parameter });
-            }
-            catch (TargetInvocationException e)
-            {
-                throw e.InnerException;
-            }
-        }
-
-        private static IColumn GetZeroSizeColumn(Table table)
-        {
-            return table.Columns.Single(c => c.Name == ZERO_SIZE_COLUMN_NAME);
         }
     }
 }

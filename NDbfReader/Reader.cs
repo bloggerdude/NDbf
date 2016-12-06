@@ -1,8 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace NDbfReader
 {
@@ -11,56 +10,52 @@ namespace NDbfReader
     /// </summary>
     public class Reader
     {
-        private const byte END_OF_FILE = 0x1A;
         private const byte DELETED_ROW_FLAG = (byte)'*';
+        private const byte END_OF_FILE = 0x1A;
+        private const int MAX_BUFFER_SIZE = 4096;
+        private const int MAX_ROWS_IN_BUFFER = 3;
 
+        private readonly byte[] _buffer;
+        private readonly int _rowSize;
         private readonly Table _table;
-        private readonly Dictionary<string, IColumn> _columnsCache;
-
+        private int _bufferOffset;
         private Encoding _encoding;
+        private int _loadedRowCount;
         private bool _rowLoaded;
-        private int _loadedRowCount = 0;
-        private int _currentRowOffset = -1;
 
         /// <summary>
         /// Initializes a new instance from the specified table and encoding.
         /// </summary>
-        /// <param name="table">The table from which rows will be read.</param>
-        /// <param name="encoding">The encoding of the tables's rows.</param>
-        /// <exception cref="ArgumentNullException"><paramref name="table"/> or <paramref name="encoding"/> is <c>null</c>.</exception>
+        /// <param name="table">The table from which rows will be loaded.</param>
+        /// <param name="encoding">The encoding.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="table"/> is <c>null</c> or <paramref name="encoding"/> is <c>null</c>.</exception>
         public Reader(Table table, Encoding encoding)
         {
             if (table == null)
             {
-                throw new ArgumentNullException("table");
+                throw new ArgumentNullException(nameof(table));
             }
             if (encoding == null)
             {
-                throw new ArgumentNullException("encoding");
+                throw new ArgumentNullException(nameof(encoding));
             }
 
             _table = table;
             _encoding = encoding;
+            _rowSize = Header.RowSize;
 
-            _columnsCache = new Dictionary<string, IColumn>(table.Columns.Count);
-            foreach (var column in table.Columns)
+            int bufferSize = 0;
+            if (_rowSize >= MAX_BUFFER_SIZE)
             {
-                _columnsCache.Add(column.Name, column);
+                bufferSize = _rowSize;
             }
-        }
-
-        /// <summary>
-        /// Gets the parent table.
-        /// </summary>
-        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public Table Table
-        {
-            get
+            else
             {
-                ThrowIfDisposed();
-
-                return _table;
+                int rowsInBuffer = Math.Min(MAX_BUFFER_SIZE / _rowSize, MAX_ROWS_IN_BUFFER);
+                bufferSize = rowsInBuffer * _rowSize;
             }
+
+            _buffer = new byte[bufferSize];
         }
 
         /// <summary>
@@ -78,105 +73,141 @@ namespace NDbfReader
         }
 
         /// <summary>
-        /// Moves the reader to the next row.
+        /// Gets the header of the parent table.
         /// </summary>
-        /// <returns><c>true</c> if there are more rows; otherwise <c>false</c>.</returns>
-        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public bool Read()
-        {
-            ThrowIfDisposed();
+        protected Header Header => ParentTable.Header;
 
-            _rowLoaded = ReadNextRow();
-
-            return _rowLoaded;
-        }
+        private Stream Stream => ParentTable.Stream;
 
         /// <summary>
-        /// Gets a <see cref="String"/> value of the specified column of the current row.
+        /// Gets the parent table.
+        /// </summary>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        public Table Table
+        {
+            get
+            {
+                ThrowIfDisposed();
+
+                return _table;
+            }
+        }
+
+        private IParentTable ParentTable => _table;
+
+        /// <summary>
+        /// Gets a <see cref="bool"/> value of the specified column of the current row.
         /// </summary>
         /// <param name="columnName">The column name.</param>
-        /// <returns>A <see cref="String"/> value.</returns>
+        /// <returns>A <see cref="bool"/> value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
         /// <exception cref="ArgumentOutOfRangeException">
         /// No column with this name was found.<br />
         /// -- or --<br />
-        /// The column has different type then <see cref="String"/>.
+        /// The column has different type then <see cref="bool"/>.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual string GetString(string columnName)
-        {
-            return GetValue<string>(columnName);
-        }
+        public bool? GetBoolean(string columnName) => GetValue<bool?>(columnName);
 
         /// <summary>
-        /// Gets a <see cref="String"/> value of the specified column of the current row.
+        /// Gets a <see cref="bool"/> value of the specified column of the current row.
         /// </summary>
         /// <param name="column">The column.</param>
-        /// <returns>A <see cref="String"/> value.</returns>
+        /// <returns>A <see cref="bool"/> value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
         /// <exception cref="ArgumentOutOfRangeException">
-        /// The column has different type then <see cref="String"/>.<br />
+        /// The column has different type then <see cref="bool"/>.<br />
         /// -- or --<br />
         /// The column is from different table instance.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual string GetString(IColumn column)
+        public bool? GetBoolean(IColumn column) => GetValue<bool?>(column);
+
+        /// <summary>
+        /// Gets raw bytes of the specified column of the current row.
+        /// </summary>
+        /// <param name="column">The column.</param>
+        /// <param name="buffer">An array of bytes. When this method returns, the buffer contains the the raw bytes of the specified column starting at the specified <paramref name="offset"/>.</param>
+        /// <param name="offset">The zero-based byte offset in <paramref name="buffer"/> at which to begin storing the raw bytes of the specified column.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="column"/> is <c>null</c>.<br />
+        /// -- or --<br />
+        /// <paramref name="buffer"/> is <c>null</c>.<br />
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="column"/> is from different table instance.<br />
+        /// -- or --<br />
+        /// <paramref name="offset"/> &lt; 0.<br />
+        /// -- or --<br />
+        /// <paramref name="offset"/> is larger then the buffer length.<br />
+        /// </exception>
+        /// <exception cref="ArgumentException"><paramref name="buffer"/> is too small. The buffer length has to be at least column size + <paramref name="offset"/>.</exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        public void GetBytes(IColumn column, byte[] buffer, int offset = 0)
         {
-            return GetValue<string>(column);
+            if (column == null)
+            {
+                throw new ArgumentNullException(nameof(column));
+            }
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+            if (offset < 0 || offset >= buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
+            ValidateReaderState();
+
+            var columnBase = (Column)column;
+            CheckColumnExists(columnBase);
+            ValidateBufferSize(buffer, offset, column);
+
+            CopyColumnBytes(columnBase, buffer, offset);
         }
 
         /// <summary>
-        /// Gets a <see cref="Decimal"/> value of the specified column of the current row.
+        /// Gets raw bytes of the specified column of the current row.
         /// </summary>
         /// <param name="columnName">The column name.</param>
-        /// <returns>A <see cref="Decimal"/> value.</returns>
-        /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
+        /// <param name="buffer">An array of bytes. When this method returns, the buffer contains the the raw bytes of the specified column starting at the specified <paramref name="offset"/>.</param>
+        /// <param name="offset">The zero-based byte offset in <paramref name="buffer"/> at which to begin storing the raw bytes of the specified column.</param>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="columnName"/> is <c>null</c>.<br />
+        /// -- or --<br />
+        /// <paramref name="buffer"/> is <c>null</c>.<br />
+        /// </exception>
         /// <exception cref="ArgumentOutOfRangeException">
-        /// No column with this name was found.<br />
+        /// <paramref name="offset"/> &lt; 0.<br />
         /// -- or --<br />
-        /// The column has different type then <see cref="Decimal"/>.
+        /// <paramref name="offset"/> is larger then the buffer length.<br />
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="ArgumentException"><paramref name="buffer"/> is too small. The buffer length has to be at least column size + <paramref name="offset"/>.</exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual decimal? GetDecimal(string columnName)
+        public void GetBytes(string columnName, byte[] buffer, int offset = 0)
         {
-            return GetValue<decimal?>(columnName);
-        }
+            if (columnName == null)
+            {
+                throw new ArgumentNullException(nameof(columnName));
+            }
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+            if (offset < 0 || offset >= buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
+            ValidateReaderState();
 
-        /// <summary>
-        /// Gets a <see cref="Decimal"/> value of the specified column of the current row.
-        /// </summary>
-        /// <param name="column">The column.</param>
-        /// <returns>A <see cref="Decimal"/> value.</returns>
-        /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
-        /// <exception cref="ArgumentOutOfRangeException">
-        /// The column has different type then <see cref="Decimal"/>.<br />
-        /// -- or --<br />
-        /// The column is from different table instance.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
-        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual decimal? GetDecimal(IColumn column)
-        {
-            return GetValue<decimal?>(column);
+            var column = (Column)FindColumnByName(columnName);
+            ValidateBufferSize(buffer, offset, column);
+
+            CopyColumnBytes(column, buffer, offset);
         }
 
         /// <summary>
@@ -190,16 +221,9 @@ namespace NDbfReader
         /// -- or --<br />
         /// The column has different type then <see cref="DateTime"/>.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual DateTime? GetDate(string columnName)
-        {
-            return GetValue<DateTime?>(columnName);
-        }
+        public DateTime? GetDate(string columnName) => GetValue<DateTime?>(columnName);
 
         /// <summary>
         /// Gets a <see cref="DateTime"/> value of the specified column of the current row.
@@ -212,105 +236,99 @@ namespace NDbfReader
         /// -- or --<br />
         /// The column is from different table instance.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual DateTime? GetDate(IColumn column)
-        {
-            return GetValue<DateTime?>(column);
-        }
+        public DateTime? GetDate(IColumn column) => GetValue<DateTime?>(column);
 
         /// <summary>
-        /// Gets a <see cref="Boolean"/> value of the specified column of the current row.
+        /// Gets a <see cref="decimal"/> value of the specified column of the current row.
         /// </summary>
         /// <param name="columnName">The column name.</param>
-        /// <returns>A <see cref="Boolean"/> value.</returns>
+        /// <returns>A <see cref="decimal"/> value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
         /// <exception cref="ArgumentOutOfRangeException">
         /// No column with this name was found.<br />
         /// -- or --<br />
-        /// The column has different type then <see cref="Boolean"/>.
+        /// The column has different type then <see cref="decimal"/>.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual bool? GetBoolean(string columnName)
-        {
-            return GetValue<bool?>(columnName);
-        }
-
+        public decimal? GetDecimal(string columnName) => GetValue<decimal?>(columnName);
 
         /// <summary>
-        /// Gets a <see cref="Boolean"/> value of the specified column of the current row.
+        /// Gets a <see cref="decimal"/> value of the specified column of the current row.
         /// </summary>
         /// <param name="column">The column.</param>
-        /// <returns>A <see cref="Boolean"/> value.</returns>
+        /// <returns>A <see cref="decimal"/> value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
         /// <exception cref="ArgumentOutOfRangeException">
-        /// The column has different type then <see cref="Boolean"/>.<br />
+        /// The column has different type then <see cref="decimal"/>.<br />
         /// -- or --<br />
         /// The column is from different table instance.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual bool? GetBoolean(IColumn column)
-        {
-            return GetValue<bool?>(column);
-        }
+        public decimal? GetDecimal(IColumn column) => GetValue<decimal?>(column);
 
         /// <summary>
-        /// Gets a <see cref="Int32"/> value of the specified column of the current row.
+        /// Gets a <see cref="int"/> value of the specified column of the current row.
         /// </summary>
         /// <param name="columnName">The column name.</param>
-        /// <returns>A <see cref="Int32"/> value.</returns>
+        /// <returns>A <see cref="int"/> value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
         /// <exception cref="ArgumentOutOfRangeException">
         /// No column with this name was found.<br />
         /// -- or --<br />
-        /// The column has different type then <see cref="Int32"/>.
+        /// The column has different type then <see cref="int"/>.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual int GetInt32(string columnName)
-        {
-            return GetValue<int>(columnName);
-        }
+        public int GetInt32(string columnName) => GetValue<int>(columnName);
 
         /// <summary>
-        /// Gets a <see cref="Int32"/> value of the specified column of the current row.
+        /// Gets a <see cref="int"/> value of the specified column of the current row.
         /// </summary>
         /// <param name="column">The column.</param>
-        /// <returns>A <see cref="Int32"/> value.</returns>
+        /// <returns>A <see cref="int"/> value.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
         /// <exception cref="ArgumentOutOfRangeException">
-        /// The column has different type then <see cref="Int32"/>.<br />
+        /// The column has different type then <see cref="int"/>.<br />
         /// -- or --<br />
         /// The column is from different table instance.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual int GetInt32(IColumn column)
-        {
-            return GetValue<int>(column);
-        }
+        public int GetInt32(IColumn column) => GetValue<int>(column);
+
+        /// <summary>
+        /// Gets a <see cref="string"/> value of the specified column of the current row.
+        /// </summary>
+        /// <param name="columnName">The column name.</param>
+        /// <returns>A <see cref="string"/> value.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// No column with this name was found.<br />
+        /// -- or --<br />
+        /// The column has different type then <see cref="string"/>.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        public string GetString(string columnName) => GetValue<string>(columnName);
+
+        /// <summary>
+        /// Gets a <see cref="string"/> value of the specified column of the current row.
+        /// </summary>
+        /// <param name="column">The column.</param>
+        /// <returns>A <see cref="string"/> value.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// The column has different type then <see cref="string"/>.<br />
+        /// -- or --<br />
+        /// The column is from different table instance.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        public string GetString(IColumn column) => GetValue<string>(column);
 
         /// <summary>
         /// Gets a value of the specified column of the current row.
@@ -321,23 +339,18 @@ namespace NDbfReader
         /// <exception cref="ArgumentOutOfRangeException">
         /// The column is from different table instance.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual object GetValue(string columnName)
+        public object GetValue(string columnName)
         {
             if (columnName == null)
             {
-                throw new ArgumentNullException("columnName");
+                throw new ArgumentNullException(nameof(columnName));
             }
             ValidateReaderState();
 
             var column = (Column)FindColumnByName(columnName);
-            var rawValue = LoadColumnBytes(column.Offset, column.Size);
-            return column.LoadValueAsObject(rawValue, _encoding);
+            return column.LoadValueAsObject(_buffer, GetColumnOffsetInBuffer(column), _encoding);
         }
 
         /// <summary>
@@ -349,24 +362,140 @@ namespace NDbfReader
         /// <exception cref="ArgumentOutOfRangeException">
         /// The column is from different table instance.
         /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
         /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        public virtual object GetValue(IColumn column)
+        public object GetValue(IColumn column)
         {
             if (column == null)
             {
-                throw new ArgumentNullException("column");
+                throw new ArgumentNullException(nameof(column));
             }
             ValidateReaderState();
-            CheckColumnBelongsToParentTable(column);
 
             var columnBase = (Column)column;
-            var rawValue = LoadColumnBytes(columnBase.Offset, columnBase.Size);
-            return columnBase.LoadValueAsObject(rawValue, _encoding);
+            CheckColumnExists(columnBase);
+
+            return columnBase.LoadValueAsObject(_buffer, GetColumnOffsetInBuffer(columnBase), _encoding);
+        }
+
+        /// <summary>
+        /// Moves the reader to the next row.
+        /// </summary>
+        /// <returns><c>true</c> if there are more rows; otherwise <c>false</c>.</returns>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        public bool Read()
+        {
+            ThrowIfDisposed();
+
+            do
+            {
+                if (_loadedRowCount >= Header.RowCount)
+                {
+                    return _rowLoaded = false;
+                }
+
+                int newBufferOffset = _bufferOffset + _rowSize;
+                if (newBufferOffset >= _buffer.Length || _loadedRowCount == 0)
+                {
+                    Stream.Read(_buffer, 0, _buffer.Length);
+                    newBufferOffset = 0;
+                }
+
+                _bufferOffset = newBufferOffset;
+                _loadedRowCount += 1;
+            }
+            while (_buffer[_bufferOffset] == DELETED_ROW_FLAG);
+
+            return _rowLoaded = true;
+        }
+
+        /// <summary>
+        /// Moves the reader to the next row.
+        /// </summary>
+        /// <returns><c>true</c> if there are more rows; otherwise <c>false</c>.</returns>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        public async Task<bool> ReadAsync()
+        {
+            ThrowIfDisposed();
+
+            do
+            {
+                if (_loadedRowCount >= Header.RowCount)
+                {
+                    return _rowLoaded = false;
+                }
+
+                int newBufferOffset = _bufferOffset + _rowSize;
+                if (newBufferOffset >= _buffer.Length || _loadedRowCount == 0)
+                {
+                    await Stream.ReadAsync(_buffer, 0, _buffer.Length).ConfigureAwait(false);
+                    newBufferOffset = 0;
+                }
+
+                _bufferOffset = newBufferOffset;
+                _loadedRowCount += 1;
+            }
+            while (_buffer[_bufferOffset] == DELETED_ROW_FLAG);
+
+            return _rowLoaded = true;
+        }
+
+        /// <summary>
+        /// Gets a value of the specified column of the current row.
+        /// </summary>
+        /// <typeparam name="T">The column type.</typeparam>
+        /// <param name="columnName">The column name.</param>
+        /// <returns>A column value.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// The column is from different table instance.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        protected T GetValue<T>(string columnName)
+        {
+            if (columnName == null)
+            {
+                throw new ArgumentNullException(nameof(columnName));
+            }
+            ValidateReaderState();
+
+            var typedColumn = FindColumnByName(columnName) as Column<T>;
+            if (typedColumn == null)
+            {
+                throw new ArgumentOutOfRangeException(nameof(columnName), "The column's type does not match the method's return type.");
+            }
+            return typedColumn.LoadValue(_buffer, GetColumnOffsetInBuffer(typedColumn), _encoding);
+        }
+
+        /// <summary>
+        /// Gets a value of the specified column of the current row.
+        /// </summary>
+        /// <typeparam name="T">The column type.</typeparam>
+        /// <param name="column">The column.</param>
+        /// <returns>A column value.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// The column is from different table instance.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.</exception>
+        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
+        protected T GetValue<T>(IColumn column)
+        {
+            if (column == null)
+            {
+                throw new ArgumentNullException(nameof(column));
+            }
+            ValidateReaderState();
+            if (column.Type != typeof(T))
+            {
+                throw new ArgumentOutOfRangeException(nameof(column), "The column's type does not match the method's return type.");
+            }
+
+            var typedColumn = (Column<T>)column;
+            CheckColumnExists(typedColumn);
+
+            return typedColumn.LoadValue(_buffer, GetColumnOffsetInBuffer(typedColumn), _encoding);
         }
 
         /// <summary>
@@ -377,167 +506,40 @@ namespace NDbfReader
             ParentTable.ThrowIfDisposed();
         }
 
-        /// <summary>
-        /// Gets the header of the parent table.
-        /// </summary>
-        protected Header Header
+        private static void ValidateBufferSize(byte[] buffer, int offset, IColumn column)
         {
-            get
+            if ((buffer.Length - offset) < column.Size)
             {
-                return ParentTable.Header;
+                throw new ArgumentException($"The buffer is too small. Increase the capacity to at least {column.Size + 1} bytes.", nameof(buffer));
             }
         }
 
-        /// <summary>
-        /// Gets a value of the specified column of the current row.
-        /// </summary>
-        /// <typeparam name="T">The column type.</typeparam>
-        /// <param name="columnName">The column name.</param>
-        /// <returns>A column value.</returns>
-        /// <exception cref="ArgumentNullException"><paramref name="columnName"/> is <c>null</c> or empty.</exception>
-        /// <exception cref="ArgumentOutOfRangeException">
-        /// The column is from different table instance.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
-        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        protected T GetValue<T>(string columnName)
+        private void CopyColumnBytes(Column column, byte[] destBuffer, int destOffset)
         {
-            if (columnName == null)
-            {
-                throw new ArgumentNullException("columnName");
-            }
-            ValidateReaderState();
-
-            var typedColumn = FindColumnByName(columnName) as Column<T>;
-            if (typedColumn == null)
-            {
-                throw new ArgumentOutOfRangeException("columnName", "The column's type does not match the method's return type.");
-            }
-            var rawValue = LoadColumnBytes(typedColumn.Offset, typedColumn.Size);
-            return typedColumn.LoadValue(rawValue, _encoding);
+            Array.Copy(_buffer, GetColumnOffsetInBuffer(column), destBuffer, destOffset, column.Size);
         }
 
-        /// <summary>
-        /// Gets a value of the specified column of the current row.
-        /// </summary>
-        /// <typeparam name="T">The column type.</typeparam>
-        /// <param name="column">The column.</param>
-        /// <returns>A column value.</returns>
-        /// <exception cref="ArgumentNullException"><paramref name="column"/> is <c>null</c>.</exception>
-        /// <exception cref="ArgumentOutOfRangeException">
-        /// The column is from different table instance.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// No row is loaded. The <see cref="Read"/> method returned <c>false</c> or it has not been called yet.<br />
-        /// -- or --<br />
-        /// The underlying stream is non-seekable and columns are read out of order.
-        /// </exception>
-        /// <exception cref="ObjectDisposedException">The parent table is disposed.</exception>
-        protected T GetValue<T>(IColumn column)
+        private IColumn FindColumnByName(string columnName)
         {
+            IColumn column = Header.Columns.FindByName(columnName);
             if (column == null)
             {
-                throw new ArgumentNullException("column");
+                throw new ArgumentOutOfRangeException(nameof(columnName), $"Column {columnName} not found.");
             }
-            ValidateReaderState();
-            CheckColumnBelongsToParentTable(column);
-            if (column.Type != typeof(T))
-            {
-                throw new ArgumentOutOfRangeException("column", "The column's type does not match the method's return type.");
-            }
-
-            var typedColumn = (Column<T>)column;
-            var rawValue = LoadColumnBytes(typedColumn.Offset, typedColumn.Size);
-            return typedColumn.LoadValue(rawValue, _encoding);
+            return column;
         }
 
-        private BinaryReader BinaryReader
+        private int GetColumnOffsetInBuffer(Column column)
         {
-            get
-            {
-                return ParentTable.BinaryReader;
-            }
+            return _bufferOffset + column.Offset + 1;
         }
 
-        private IParentTable ParentTable
+        private void CheckColumnExists(Column column)
         {
-            get
+            if (!Header.Columns.Contains(column))
             {
-                return (IParentTable)_table;
+                throw new ArgumentOutOfRangeException(nameof(column), "The column instance not found.");
             }
-        }
-
-        private bool ReadNextRow()
-        {
-            if (_loadedRowCount >= Header.RowCount)
-            {
-                return false;
-            }
-            MoveToTheEndOfCurrentRow();
-            if (SkipDeletedRows() == SkipDeletedRowsResult.EndOfFile)
-            {
-                return false;
-            }
-            _currentRowOffset = 0;
-            return true;
-        }
-
-        private void MoveToTheEndOfCurrentRow()
-        {
-            if (_currentRowOffset >= 0)
-            {
-                BinaryReader.BaseStream.SeekForward(Header.RowSize - _currentRowOffset - 1);
-            }
-        }
-
-        private SkipDeletedRowsResult SkipDeletedRows()
-        {
-            var isRowDeleted = false;
-            do
-            {
-                var nextByte = BinaryReader.ReadByte();
-                if (nextByte == END_OF_FILE)
-                {
-                    return SkipDeletedRowsResult.EndOfFile;
-                }
-
-                isRowDeleted = (nextByte == DELETED_ROW_FLAG);
-                if (isRowDeleted)
-                {
-                    BinaryReader.BaseStream.SeekForward(Header.RowSize - 1);
-                }
-
-                _loadedRowCount += 1;
-            }
-            while (isRowDeleted);
-
-            return SkipDeletedRowsResult.OK;
-        }
-
-        private byte[] LoadColumnBytes(int offset, int size)
-        {
-            var seek = offset - _currentRowOffset;
-            if (seek < 0)
-            {
-                if (BinaryReader.BaseStream.CanSeek)
-                {
-                    BinaryReader.BaseStream.Seek(seek, SeekOrigin.Current);
-                }
-                else
-                {
-                    throw new InvalidOperationException("The underlying non-seekable stream does not allow reading the columns out of order.");
-                }
-            }
-            else if (seek > 0)
-            {
-                BinaryReader.BaseStream.SeekForward(seek);
-            }
-            _currentRowOffset += (seek + size);
-            return BinaryReader.ReadBytes(size);
         }
 
         private void ValidateReaderState()
@@ -546,31 +548,8 @@ namespace NDbfReader
 
             if (!_rowLoaded)
             {
-                throw new InvalidOperationException("No row is loaded. Call Read method first and check whether it returns true.");
+                throw new InvalidOperationException($"No row is loaded. Call {nameof(Read)} method first and check whether it returns true.");
             }
-        }
-
-        private void CheckColumnBelongsToParentTable(IColumn column)
-        {
-            if (!_table.Columns.Contains(column))
-            {
-                throw new ArgumentOutOfRangeException("column", "The column instance doesn't belong to this table.");
-            }
-        }
-
-        private IColumn FindColumnByName(string columnName)
-        {
-            if (!_columnsCache.ContainsKey(columnName))
-            {
-                throw ExceptionFactory.CreateArgumentOutOfRangeException("columnName", "Column {0} not found.", columnName);
-            }
-            return _columnsCache[columnName];
-        }
-
-        private enum SkipDeletedRowsResult
-        {
-            OK,
-            EndOfFile
         }
     }
 }

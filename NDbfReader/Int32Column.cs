@@ -5,7 +5,7 @@ using System.Text;
 namespace NDbfReader
 {
     /// <summary>
-    /// Represents a <see cref="Int32"/> column.
+    /// Represents a <see cref="int"/> column.
     /// </summary>
     [DebuggerDisplay("Int32 {Name}")]
     public class Int32Column : Column<int>
@@ -25,12 +25,13 @@ namespace NDbfReader
         /// <summary>
         /// Loads a value from the specified buffer.
         /// </summary>
-        /// <param name="buffer">The byte array from which a value should be loaded. The buffer length is always at least equal to the column size.</param>
+        /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value. The encoding is never <c>null</c>.</param>
         /// <returns>A column value.</returns>
-        protected override int DoLoad(byte[] buffer, Encoding encoding)
+        protected override int DoLoad(byte[] buffer, int offset, Encoding encoding)
         {
-            return BitConverter.ToInt32(buffer, 0);
+            return BitConverter.ToInt32(buffer, offset);
         }
     }
 }

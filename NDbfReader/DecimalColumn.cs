@@ -1,18 +1,17 @@
 ﻿using System;
 using System.Diagnostics;
 using System.Globalization;
-using System.Linq;
 using System.Text;
 
 namespace NDbfReader
 {
     /// <summary>
-    /// Represents a <see cref="Decimal"/> column.
+    /// Represents a <see cref="decimal"/> column.
     /// </summary>
     [DebuggerDisplay("Decimal {Name}")]
     public class DecimalColumn : Column<decimal?>
     {
-        private static readonly NumberFormatInfo DecimalNumberFormat = new NumberFormatInfo() { NumberDecimalSeparator = "." };
+        private static readonly NumberFormatInfo DecimalNumberFormat = new NumberFormatInfo { NumberDecimalSeparator = "." };
 
         /// <summary>
         /// Initializes a new instance with the specified name and offset.
@@ -30,23 +29,24 @@ namespace NDbfReader
         /// <summary>
         /// Loads a value from the specified buffer.
         /// </summary>
-        /// <param name="buffer">The byte array from which a value should be loaded. The buffer length is always at least equal to the column size.</param>
+        /// <param name="buffer">The byte array from which a value should be loaded.</param>
+        /// <param name="offset">The byte offset in <paramref name="buffer"/> at which loading begins. </param>
         /// <param name="encoding">The encoding that should be used when loading a value. The encoding is never <c>null</c>.</param>
         /// <returns>A column value.</returns>
-        protected override decimal? DoLoad(byte[] buffer, Encoding encoding)
+        protected override decimal? DoLoad(byte[] buffer, int offset, Encoding encoding)
         {
-            var stringValue = encoding.GetString(buffer, 0, buffer.Length);
-            if(stringValue.Length == 0)
+            string stringValue = encoding.GetString(buffer, offset, Size);
+            if (stringValue.Length == 0)
             {
                 return null;
             }
 
-            var lastChar = stringValue.Last();
-            if (lastChar == ' ' || lastChar == '?')
+            decimal value;
+            if (decimal.TryParse(stringValue, NumberStyles.Float | NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite, DecimalNumberFormat, out value))
             {
-                return null;
+                return value;
             }
-            return decimal.Parse(stringValue, NumberStyles.Float | NumberStyles.AllowLeadingWhite, DecimalNumberFormat);
+            return null;
         }
     }
 }

@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>NDbfReader</id>
+    <title>NDbfReader</title>
+    <version>2.0.0.0</version>
+    <authors>Stanislav Fajfr</authors>
+    <owners>Stanislav Fajfr</owners>
+    <licenseUrl>https://github.com/eXavera/NDbfReader/blob/master/LICENSE.md</licenseUrl>
+    <projectUrl>https://github.com/eXavera/NDbfReader</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Fully managed reader of DBF files. Fast and lightweight with async support.</description>
+    <releaseNotes>https://github.com/eXavera/NDbfReader/releases</releaseNotes>
+    <copyright>Copyright © 2016 Stanislav Fajfr</copyright>
+    <tags>dbf dBASE</tags>
+    <dependencies>
+      <group targetFramework=".NETFramework4.0">
+        <dependency id="Microsoft.Bcl" version="1.1.10" />
+        <dependency id="Microsoft.Bcl.Async" version="1.0.168" />
+        <dependency id="Microsoft.Bcl.Build" version="1.0.21" />
+      </group>
+      <group targetFramework=".NETFramework4.5"></group>
+      <group targetFramework=".NETStandard1.3">
+        <dependency id="System.Runtime" version="4.1.0" />
+        <dependency id="System.Diagnostics.Debug" version="4.0.11" />
+        <dependency id="System.Text.Encoding" version="4.0.11" />
+        <dependency id="System.Collections" version="4.0.11" />
+        <dependency id="System.Globalization" version="4.0.11" />
+        <dependency id="System.IO" version="4.1.0" />
+        <dependency id="System.Threading.Tasks" version="4.0.11" />
+        <dependency id="System.Runtime.Extensions" version="4.1.0" />
+        <dependency id="System.Linq" version="4.1.0" />
+        <dependency id="System.IO.FileSystem" version="4.0.1" />
+        <dependency id="System.IO.FileSystem.Primitives" version="4.0.1" />
+      </group>
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="NDbfReader\bin\Release\NDbfReader.dll" target="lib\net40" />
+    <file src="NDbfReader\bin\Release\NDbfReader.xml" target="lib\net40" />
+    <file src="NDbfReader.Net45\bin\Release\NDbfReader.dll" target="lib\net45" />
+    <file src="NDbfReader.Net45\bin\Release\NDbfReader.xml" target="lib\net45" />
+    <file src="NDbfReader.NetCore\bin\Release\NDbfReader.dll" target="lib\netstandard1.3" />
+    <file src="NDbfReader.NetCore\bin\Release\NDbfReader.xml" target="lib\netstandard1.3" />
+  </files>
+</package>
